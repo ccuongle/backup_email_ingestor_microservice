@@ -1,0 +1,740 @@
+# ============================================================================
+# EMAIL INGESTION MICROSERVICE (MS1) - COMPLETE SPECIFICATION
+# ============================================================================
+
+metadata:
+  project_name: "Email Ingestion Microservice"
+  code: "MS1"
+  version: "2.0.0"
+  created: "2025-01-23"
+  language: "Python 3.9+"
+  architecture: "Event-Driven Microservice"
+  team: "Platform Engineering"
+  repository: "github.com/company/ms1-email-ingestion"
+
+# ============================================================================
+# PROJECT OVERVIEW
+# ============================================================================
+
+overview:
+  purpose: |
+    High-performance microservice that ingests emails from Microsoft Outlook/Exchange
+    via Graph API, processes them with intelligent filtering and attachment handling,
+    and forwards structured metadata to downstream classification and persistence services.
+  
+  business_value:
+    - "Automates email processing for customer support, invoicing, and marketing"
+    - "Reduces manual email handling by 90%"
+    - "Processes 10,000+ emails daily with 99.9% reliability"
+    - "Real-time processing with <1 second latency"
+  
+  system_context: |
+    MS1 is the first layer in a multi-tier email processing pipeline:
+    
+    ┌─────────────────────────────────────────────────────────┐
+    │  Microsoft Outlook/Exchange (Email Server)              │
+    └─────────────────┬───────────────────────────────────────┘
+                      │ Graph API
+                      ↓
+    ┌─────────────────────────────────────────────────────────┐
+    │  MS1: Email Ingestion (This Service)                    │
+    │  - Fetch emails                                          │
+    │  - Filter spam                                           │
+    │  - Extract attachments                                   │
+    │  - Deduplicate                                           │
+    └─────────────────┬───────────────────────────────────────┘
+                      │ REST API
+         ┌────────────┴────────────┐
+         ↓                         ↓
+    ┌──────────────┐      ┌──────────────┐
+    │ MS2: Classify│      │ MS4: Persist │
+    │ - NLP        │      │ - Database   │
+    │ - Categories │      │ - Search     │
+    └──────────────┘      └──────────────┘
+
+  capacity:
+    daily_volume: "10,000 emails"
+    peak_rate: "2 emails/second (8-10 AM)"
+    spike_capacity: "50-100 emails/second"
+    headroom: "25-50x peak capacity"
+    sla_uptime: "99.9%"
+    sla_latency: "<1 second per email"
+
+# ============================================================================
+# ARCHITECTURE
+# ============================================================================
+
+architecture:
+  style: "Event-Driven Microservice with Queue-Based Processing"
+  pattern: "Producer-Consumer"
+  
+  principles:
+    - "Separation of concerns (fetch vs process)"
+    - "Asynchronous processing (queue buffering)"
+    - "Horizontal scalability (stateless workers)"
+    - "Resilience (queue persistence, retry logic)"
+    - "Observability (metrics, logging, tracing)"
+  
+  architecture_diagram: |
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║                   EMAIL INGESTION MS1                          ║
+    ╠═══════════════════════════════════════════════════════════════╣
+    ║                                                                ║
+    ║  ┌────────────────┐         ┌────────────────┐               ║
+    ║  │ Polling Service│         │Webhook Service │               ║
+    ║  │  (Scheduled)   │         │  (Real-time)   │               ║
+    ║  └───────┬────────┘         └───────┬────────┘               ║
+    ║          │                          │                         ║
+    ║          │ enqueue                  │ enqueue                 ║
+    ║          └──────────┬───────────────┘                         ║
+    ║                     ↓                                         ║
+    ║          ┌──────────────────────┐                            ║
+    ║          │    Email Queue       │                            ║
+    ║          │  (Redis Sorted Set)  │                            ║
+    ║          │  - Priority support  │                            ║
+    ║          │  - Persistence       │                            ║
+    ║          │  - Timeout tracking  │                            ║
+    ║          └──────────┬───────────┘                            ║
+    ║                     │ dequeue_batch(50)                      ║
+    ║                     ↓                                         ║
+    ║          ┌──────────────────────┐                            ║
+    ║          │  Batch Processor     │                            ║
+    ║          │ ┌──────────────────┐ │                            ║
+    ║          │ │ Worker Pool (20) │ │                            ║
+    ║          │ │  ThreadExecutor  │ │                            ║
+    ║          │ └──────────────────┘ │                            ║
+    ║          └──────────┬───────────┘                            ║
+    ║                     │ parallel process                       ║
+    ║                     ↓                                         ║
+    ║          ┌──────────────────────┐                            ║
+    ║          │  Email Processor     │                            ║
+    ║          │  - Mark as read      │                            ║
+    ║          │  - Spam filter       │                            ║
+    ║          │  - Save attachments  │                            ║
+    ║          │  - Deduplication     │                            ║
+    ║          └──────────┬───────────┘                            ║
+    ║                     │                                         ║
+    ║          ┌──────────┴───────────┐                            ║
+    ║          ↓                      ↓                            ║
+    ║   ┌─────────────┐        ┌─────────────┐                    ║
+    ║   │MS2 Classify │        │ MS4 Persist │                    ║
+    ║   │  (REST API) │        │  (REST API) │                    ║
+    ║   └─────────────┘        └─────────────┘                    ║
+    ║                                                               ║
+    ╠═══════════════════════════════════════════════════════════════╣
+    ║                  Session Manager (Redis)                      ║
+    ║          State Machine | Deduplication | Metrics              ║
+    ╚═══════════════════════════════════════════════════════════════╝
+  
+  layers:
+    presentation:
+      name: "API Layer"
+      components:
+        - "REST API (FastAPI) on port 8000"
+        - "Webhook endpoint (FastAPI) on port 8100"
+      responsibilities:
+        - "Accept control commands (start/stop session)"
+        - "Expose health checks and metrics"
+        - "Receive webhook notifications"
+    
+    ingestion:
+      name: "Data Collection Layer"
+      components:
+        - "Polling Service"
+        - "Webhook Service"
+      responsibilities:
+        - "Fetch emails from Microsoft Graph API"
+        - "Enqueue to processing queue"
+        - "Handle API rate limits"
+    
+    buffering:
+      name: "Queue Layer"
+      components:
+        - "Email Queue (Redis)"
+      responsibilities:
+        - "Buffer incoming emails"
+        - "Priority management"
+        - "Persistence and recovery"
+        - "Timeout tracking"
+    
+    processing:
+      name: "Business Logic Layer"
+      components:
+        - "Batch Processor"
+        - "Email Processor"
+      responsibilities:
+        - "Parallel processing"
+        - "Spam filtering"
+        - "Attachment extraction"
+        - "Deduplication"
+    
+    integration:
+      name: "External Services Layer"
+      components:
+        - "MS2 Classifier Client"
+        - "MS4 Persistence Client"
+      responsibilities:
+        - "Forward metadata to downstream services"
+        - "Handle service failures"
+    
+    orchestration:
+      name: "Control Layer"
+      components:
+        - "Session Manager"
+        - "Orchestrator"
+      responsibilities:
+        - "Workflow state management"
+        - "Service lifecycle"
+        - "Monitoring and alerting"
+    
+    persistence:
+      name: "Data Layer"
+      components:
+        - "Redis"
+        - "File System (attachments)"
+      responsibilities:
+        - "Session state"
+        - "Queue storage"
+        - "Processed email IDs"
+        - "Metrics and history"
+
+# ============================================================================
+# COMPONENTS DETAILED
+# ============================================================================
+
+components:
+  
+  # --------------------------------------------------------------------------
+  orchestrator:
+    name: "Email Ingestion Orchestrator"
+    file: "main_orchestrator.py"
+    class: "EmailIngestionOrchestrator"
+    type: "Coordinator"
+    
+    description: |
+      Central control component that manages the lifecycle of all services.
+      Acts as the entry point for starting/stopping the ingestion workflow.
+    
+    responsibilities:
+      - "Initialize and start all services in correct order"
+      - "Monitor service health and status"
+      - "Handle graceful shutdown"
+      - "Provide CLI and API interfaces"
+      - "Coordinate state transitions"
+    
+    lifecycle:
+      startup_sequence:
+        - step: 1
+          action: "Create session in Session Manager"
+          state: "BOTH_ACTIVE or POLLING_ACTIVE"
+        
+        - step: 2
+          action: "Start Batch Processor"
+          reason: "Must be ready before emails arrive"
+        
+        - step: 3
+          action: "Start Webhook Service (if enabled)"
+          creates: "ngrok tunnel, Graph subscription"
+        
+        - step: 4
+          action: "Start Polling Service"
+          begins: "Fetching emails"
+      
+      shutdown_sequence:
+        - step: 1
+          action: "Stop Polling Service"
+          reason: "Stop feeding new emails"
+        
+        - step: 2
+          action: "Stop Webhook Service"
+          reason: "Stop receiving notifications"
+        
+        - step: 3
+          action: "Wait for Batch Processor to finish"
+          timeout: "2 seconds grace period"
+        
+        - step: 4
+          action: "Stop Batch Processor"
+          ensures: "Current batch completes"
+        
+        - step: 5
+          action: "Terminate session"
+          saves: "Final state to Redis"
+    
+    cli_interface:
+      start_normal:
+        command: "python main_orchestrator.py"
+        description: "Start with default settings"
+        defaults:
+          polling_mode: "scheduled"
+          polling_interval: 300
+          enable_webhook: true
+          batch_size: 50
+          max_workers: 20
+      
+      start_custom:
+        command: "python main_orchestrator.py --batch-size 100 --workers 50"
+        description: "Custom performance tuning"
+      
+      polling_only:
+        command: "python main_orchestrator.py --no-webhook"
+        description: "Disable webhook, use only polling"
+      
+      poll_once:
+        command: "python main_orchestrator.py --poll-once"
+        description: "One-time fetch and exit"
+      
+      manual_mode:
+        command: "python main_orchestrator.py --mode manual --interval 600"
+        description: "Manual trigger polling every 10 minutes"
+    
+    configuration:
+      environment_variables:
+        - "CLIENT_ID (required)"
+        - "CLIENT_SECRET (required)"
+        - "REDIS_HOST (default: localhost)"
+        - "REDIS_PORT (default: 6379)"
+        - "BATCH_SIZE (default: 50)"
+        - "MAX_WORKERS (default: 20)"
+        - "POLLING_INTERVAL (default: 300)"
+  
+  # --------------------------------------------------------------------------
+  session_manager:
+    name: "Session Manager"
+    file: "core/session_manager.py"
+    class: "SessionManager"
+    type: "State Machine"
+    pattern: "Singleton"
+    
+    description: |
+      Manages the workflow state machine, tracking session lifecycle,
+      email deduplication, and metrics. All state is persisted to Redis
+      for crash recovery.
+    
+    state_machine:
+      states:
+        IDLE:
+          description: "No active session"
+          allowed_transitions: ["BOTH_ACTIVE", "POLLING_ACTIVE"]
+        
+        BOTH_ACTIVE:
+          description: "Polling + Webhook both running"
+          use_case: "Initial backlog processing"
+          allowed_transitions: ["WEBHOOK_ACTIVE", "TERMINATED"]
+        
+        WEBHOOK_ACTIVE:
+          description: "Only webhook active (optimal)"
+          use_case: "Normal operation after backlog cleared"
+          allowed_transitions: ["BOTH_ACTIVE", "TERMINATED"]
+        
+        POLLING_ACTIVE:
+          description: "Only polling active"
+          use_case: "Webhook disabled or unavailable"
+          allowed_transitions: ["TERMINATED"]
+        
+        TERMINATED:
+          description: "Session ended"
+          allowed_transitions: []
+      
+      transitions:
+        start_with_webhook:
+          from: "IDLE"
+          to: "BOTH_ACTIVE"
+          trigger: "orchestrator.start_session(enable_webhook=True)"
+          logic: "Start both services to process backlog"
+        
+        start_without_webhook:
+          from: "IDLE"
+          to: "POLLING_ACTIVE"
+          trigger: "orchestrator.start_session(enable_webhook=False)"
+          logic: "Polling-only mode"
+        
+        backlog_cleared:
+          from: "BOTH_ACTIVE"
+          to: "WEBHOOK_ACTIVE"
+          trigger: "complete_initial_polling()"
+          condition: "No emails found for 3 consecutive polls"
+          logic: "Stop polling, rely on webhook"
+        
+        webhook_failure:
+          from: "WEBHOOK_ACTIVE"
+          to: "BOTH_ACTIVE"
+          trigger: "activate_fallback_polling(reason)"
+          condition: "webhook_errors >= max_webhook_errors (5)"
+          logic: "Restart polling as backup"
+        
+        webhook_recovered:
+          from: "BOTH_ACTIVE"
+          to: "WEBHOOK_ACTIVE"
+          trigger: "restore_webhook_only()"
+          condition: "Webhook stable again"
+          logic: "Stop polling, back to webhook-only"
+        
+        user_stop:
+          from: "*"
+          to: "TERMINATED"
+          trigger: "terminate_session(reason)"
+          logic: "Graceful shutdown"
+    
+    deduplication:
+      mechanism: "Redis Set"
+      key: "email:processed"
+      ttl: "30 days"
+      algorithm: |
+        1. Check if email_id exists in Set
+        2. If exists → Skip (already processed)
+        3. If not exists → Process and add to Set
+      
+      race_condition_prevention: "SADD returns 1 if new, 0 if exists (atomic)"
+    
+    methods:
+      start_session:
+        parameters:
+          - "config: SessionConfig"
+        returns: "bool (success)"
+        logic: |
+          1. Check current state (must be IDLE or TERMINATED)
+          2. Set state based on webhook_enabled
+          3. Create session data in Redis
+          4. Return True
+      
+      complete_initial_polling:
+        returns: "bool (success)"
+        logic: |
+          1. Check current state (must be BOTH_ACTIVE)
+          2. Transition to WEBHOOK_ACTIVE
+          3. Update timestamp in Redis
+      
+      activate_fallback_polling:
+        parameters:
+          - "reason: str"
+        returns: "bool (success)"
+        logic: |
+          1. Check current state (must be WEBHOOK_ACTIVE)
+          2. Transition to BOTH_ACTIVE
+          3. Increment webhook_errors counter
+          4. Log fallback reason
+      
+      register_processed_email:
+        parameters:
+          - "email_id: str"
+        returns: "bool (is_new)"
+        logic: |
+          1. SADD to processed set (atomic)
+          2. If new (result=1):
+             - Remove from pending
+             - Increment processed_count
+             - Increment metrics
+          3. Return is_new
+      
+      register_pending_email:
+        parameters:
+          - "email_id: str"
+        logic: |
+          1. Check if already processed
+          2. If not, add to pending set
+          3. Update pending_count
+      
+      register_failed_email:
+        parameters:
+          - "email_id: str"
+          - "error: str"
+        logic: |
+          1. Move to failed queue
+          2. Store error metadata
+          3. Increment failed_count
+    
+    redis_schema:
+      session_current:
+        key: "session:current"
+        type: "Hash"
+        fields:
+          - "session_id"
+          - "state"
+          - "start_time"
+          - "polling_interval"
+          - "webhook_enabled"
+          - "polling_mode"
+          - "polling_errors"
+          - "webhook_errors"
+          - "processed_count"
+          - "pending_count"
+        ttl: "7 days"
+      
+      sessions_history:
+        key: "sessions:history"
+        type: "List (JSON)"
+        max_size: 100
+        purpose: "Historical tracking"
+      
+      email_processed:
+        key: "email:processed"
+        type: "Set"
+        members: "email_id strings"
+        ttl: "30 days"
+        purpose: "Deduplication"
+  
+  # --------------------------------------------------------------------------
+  polling_service:
+    name: "Polling Service"
+    file: "core/polling_service.py"
+    class: "PollingService"
+    type: "Data Fetcher"
+    pattern: "Singleton"
+    
+    description: |
+      Periodically fetches unread emails from Microsoft Graph API and enqueues
+      them for processing. Supports manual, scheduled, and fallback modes.
+    
+    modes:
+      MANUAL:
+        description: "On-demand polling via API call"
+        trigger: "orchestrator.trigger_manual_poll()"
+        use_case: "Testing, debugging, manual refresh"
+      
+      SCHEDULED:
+        description: "Automatic periodic polling"
+        default_interval: 300  # 5 minutes
+        use_case: "Initial backlog processing"
+        stop_condition: "No emails found for 3 consecutive polls"
+      
+      FALLBACK:
+        description: "Backup when webhook fails"
+        trigger: "session_manager.activate_fallback_polling()"
+        use_case: "Webhook errors exceed threshold"
+    
+    workflow:
+      poll_once:
+        steps:
+          - step: "Fetch unread emails"
+            api: "GET /v1.0/me/messages?$filter=isRead eq false&$top=100"
+            timeout: "30 seconds"
+            result: "List of message objects"
+          
+          - step: "Batch enqueue"
+            method: "queue.enqueue_batch(emails)"
+            optimization: "Redis pipeline, single round-trip"
+            performance: "~100 emails/second"
+          
+          - step: "Register as pending"
+            method: "session_manager.register_pending_email()"
+            purpose: "Track in-flight emails"
+          
+          - step: "Return result"
+            metrics:
+              - "emails_found"
+              - "enqueued"
+              - "skipped (already processed)"
+              - "fetch_time"
+              - "enqueue_time"
+      
+      polling_loop:
+        steps:
+          - step: "Check session state"
+            condition: "Must be BOTH_ACTIVE"
+            action_if_not: "Sleep and retry"
+          
+          - step: "Execute poll_once()"
+          
+          - step: "Check for completion"
+            condition: "emails_found == 0 for 3 consecutive polls"
+            action_if_true: "complete_initial_polling() and stop"
+          
+          - step: "Sleep"
+            duration: "polling_interval seconds"
+          
+          - step: "Repeat"
+    
+    graph_api:
+      authentication: "Bearer token from token_manager"
+      endpoint: "https://graph.microsoft.com/v1.0/me/messages"
+      
+      query_parameters:
+        filter: "isRead eq false"
+        top: 100
+        orderby: "receivedDateTime desc"
+      
+      rate_limits:
+        calls_per_minute: 60
+        handling: "Exponential backoff on 429 errors"
+      
+      pagination:
+        support: "Partial (TODO: implement @odata.nextLink)"
+        current_limit: "100 emails per poll"
+    
+    performance:
+      fetch_time: "1-3 seconds for 100 emails"
+      enqueue_time: "0.1-0.2 seconds for 100 emails"
+      total_time: "~2-5 seconds per poll cycle"
+      throughput: "~20-50 emails/second (fetch+enqueue)"
+    
+    error_handling:
+      network_errors:
+        action: "Log error, increment polling_errors"
+        retry: "Next poll cycle"
+      
+      api_errors:
+        codes:
+          401: "Token expired → refresh"
+          429: "Rate limit → exponential backoff"
+          500: "Server error → retry"
+      
+      threshold:
+        max_errors: 3
+        action: "Alert, but continue polling"
+  
+  # --------------------------------------------------------------------------
+  webhook_service:
+    name: "Webhook Service"
+    file: "core/webhook_service.py"
+    class: "WebhookService"
+    type: "Event Listener"
+    pattern: "Singleton"
+    
+    description: |
+      Receives real-time push notifications from Microsoft Graph when new
+      emails arrive. More efficient than polling for real-time processing.
+    
+    architecture:
+      tunnel: "ngrok (HTTP tunnel)"
+      port: 8100
+      endpoint: "/webhook/notifications"
+      public_url: "https://{random}.ngrok.io/webhook/notifications"
+    
+    workflow:
+      startup:
+        steps:
+          - step: "Kill existing ngrok processes"
+            command: "psutil.process_iter() → kill"
+          
+          - step: "Kill port 8100 process"
+            reason: "Clean start"
+          
+          - step: "Start ngrok tunnel"
+            command: "ngrok.connect(8100)"
+            result: "public_url"
+            wait: "1.5 seconds for tunnel establishment"
+          
+          - step: "Start FastAPI server"
+            command: "uvicorn api.webhook_app:app --host 0.0.0.0 --port 8100"
+            subprocess: true
+          
+          - step: "Create Graph API subscription"
+            api: "POST /v1.0/subscriptions"
+            payload:
+              changeType: "created"
+              notificationUrl: "{public_url}/webhook/notifications"
+              resource: "me/mailfolders('inbox')/messages"
+              expirationDateTime: "+3 days"
+              clientState: "webhook_secret_state"
+            
+            response:
+              id: "subscription_id"
+              expirationDateTime: "ISO8601"
+            
+            validation:
+              request: "GET {notificationUrl}?validationToken=xxx"
+              response: "Return validationToken as plain text (200 OK)"
+          
+          - step: "Save subscription to Redis"
+            key: "webhook:subscription"
+            fields: ["id", "expirationDateTime", "notificationUrl"]
+          
+          - step: "Start renewal watcher"
+            thread: "Background daemon thread"
+            interval: "5 minutes"
+            logic: "Check expiry, renew if <1 hour remaining"
+      
+      notification_handling:
+        steps:
+          - step: "Receive POST /webhook/notifications"
+            body:
+              value:
+                - subscriptionId: "xxx"
+                  clientState: "webhook_secret_state"
+                  resource: "me/messages/{message_id}"
+                  resourceData:
+                    "@odata.type": "#Microsoft.Graph.Message"
+                    id: "{message_id}"
+          
+          - step: "Validate clientState"
+            expected: "webhook_secret_state"
+            action_if_mismatch: "Reject (security)"
+          
+          - step: "Extract message_id"
+            from: "resourceData.id"
+          
+          - step: "Fetch full email details"
+            api: "GET /v1.0/me/messages/{message_id}"
+            reason: "Notification only contains ID, not full email"
+            result: "message object"
+          
+          - step: "Check deduplication"
+            method: "session_manager.is_email_processed()"
+            action_if_true: "Skip"
+          
+          - step: "Enqueue"
+            method: "queue.enqueue(message_id, message_data)"
+          
+          - step: "Return 202 Accepted"
+            reason: "Acknowledge receipt to Graph API"
+      
+      subscription_renewal:
+        background_thread: true
+        check_interval: "5 minutes"
+        
+        renewal_logic:
+          - step: "Get subscription from Graph API"
+            api: "GET /v1.0/subscriptions/{subscription_id}"
+            response:
+              id: "xxx"
+              expirationDateTime: "ISO8601"
+          
+          - step: "Calculate remaining time"
+            formula: "expiry - now"
+          
+          - step: "Check threshold"
+            threshold: "1 hour"
+            action_if_below: "Renew subscription"
+          
+          - step: "Renew"
+            api: "PATCH /v1.0/subscriptions/{subscription_id}"
+            payload:
+              expirationDateTime: "+3 days from now"
+            result: "Extended subscription"
+          
+          - step: "Handle errors"
+            404_not_found: "Subscription deleted → recreate"
+            401_unauthorized: "Token expired → refresh → retry"
+    
+    resilience:
+      error_tracking:
+        counter: "webhook_errors (in session)"
+        threshold: 5
+        action: "activate_fallback_polling()"
+      
+      error_reset:
+        condition: "Successful notification processed"
+        action: "webhook_errors = 0"
+      
+      subscription_recovery:
+        scenario: "Subscription deleted by Graph API"
+        detection: "404 on renewal check"
+        action: "Recreate subscription"
+      
+      tunnel_recovery:
+        scenario: "ngrok tunnel dies"
+        detection: "Connection errors"
+        action: "Restart ngrok, recreate subscription"
+    
+    limitations:
+      ngrok_free_tier:
+        max_connections: "40/minute"
+        session_duration: "8 hours"
+        note: "For production, use paid ngrok or dedicated public endpoint"
+      
+      subscription_expiry:
+        max_duration: "3 days"
+        reason: "Microsoft Graph API limitation"
+        mitigation: "Auto-renewal every hour"
+  

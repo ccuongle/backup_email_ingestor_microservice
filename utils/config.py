@@ -51,8 +51,8 @@ MS4_PERSISTENCE_BASE_URL = os.getenv(
 )
 
 # ============= Service Ports =============
-API_PORT = int(os.getenv("API_PORT", "8000"))  # API điều khiển
-WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8100"))  # Webhook riêng
+API_PORT = int(os.getenv("API_PORT", "8000"))
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8100"))
 
 # ============= Polling Settings =============
 DEFAULT_POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "300"))  # 5 phút
@@ -99,6 +99,9 @@ def validate_config():
     if not CLIENT_SECRET:
         errors.append("CLIENT_SECRET is required")
     
+    # Move port casting before validation
+    # API_PORT = int(os.getenv("API_PORT", "8000"))
+    # WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8100"))
     if API_PORT == WEBHOOK_PORT:
         errors.append(f"API_PORT ({API_PORT}) and WEBHOOK_PORT ({WEBHOOK_PORT}) must be different")
     

@@ -1,6 +1,6 @@
 """
-Main Orchestrator
-Điều phối toàn bộ workflow của microservice email ingestion
+Main Orchestrator - Updated
+Điều phối với Queue + Batch Processing architecture
 """
 import time
 import signal
@@ -11,13 +11,20 @@ from typing import Optional
 from core.session_manager import session_manager, SessionConfig, SessionState, TriggerMode
 from core.polling_service import polling_service
 from core.webhook_service import webhook_service
+from core.batch_processor import get_batch_processor
+from core.queue_manager import get_email_queue
+
 
 class EmailIngestionOrchestrator:
-    """Orchestrator điều phối toàn bộ email ingestion workflow"""
+    """
+    Orchestrator với kiến trúc mới:
+    Polling/Webhook → Queue → Batch Processor (parallel)
+    """
     
     def __init__(self):
         self.running = False
         self.current_session_id: Optional[str] = None
+        self.batch_processor = None
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -27,9 +34,20 @@ class EmailIngestionOrchestrator:
         self,
         polling_mode: TriggerMode = TriggerMode.SCHEDULED,
         polling_interval: int = 300,
-        enable_webhook: bool = True
+        enable_webhook: bool = True,
+        batch_size: int = 50,
+        max_workers: int = 20
     ) -> bool:
-        """Khởi động phiên làm việc mới"""
+        """
+        Khởi động phiên làm việc với batch processing
+        
+        Args:
+            polling_mode: Manual/Scheduled polling
+            polling_interval: Polling interval (seconds)
+            enable_webhook: Enable webhook notifications
+            batch_size: Number of emails per batch
+            max_workers: Number of parallel workers
+        """
         if self.running:
             print("[Orchestrator] Session already running")
             return False
@@ -51,19 +69,35 @@ class EmailIngestionOrchestrator:
         print(f"Polling Mode: {polling_mode.value}")
         print(f"Polling Interval: {polling_interval}s ({polling_interval/60:.1f}min)")
         print(f"Webhook Enabled: {enable_webhook}")
+        print("-" * 70)
+        print(f"Batch Size: {batch_size} emails")
+        print(f"Parallel Workers: {max_workers}")
+        print(f"Architecture: Polling/Webhook → Queue → Batch Processor")
         print("=" * 70)
         
         try:
-            # Phase 1: Start session với state phù hợp
+            # Phase 0: Start session
             if not session_manager.start_session(config):
                 return False
             
             self.current_session_id = session_id
             self.running = True
             
-            # Phase 1a: Start webhook service (nếu được enable)
+            # Phase 1: Start Batch Processor (CRITICAL - must start first)
+            print("\n[Orchestrator] Phase 1: Starting Batch Processor...")
+            self.batch_processor = get_batch_processor(
+                batch_size=batch_size,
+                max_workers=max_workers
+            )
+            
+            if not self.batch_processor.start():
+                raise Exception("Failed to start batch processor")
+            
+            print("[Orchestrator] ✓ Batch Processor started")
+            
+            # Phase 2: Start Webhook (if enabled)
             if enable_webhook:
-                print("\n[Orchestrator] Phase 1a: Starting Webhook Service...")
+                print("\n[Orchestrator] Phase 2: Starting Webhook Service...")
                 if not webhook_service.start():
                     print("[Orchestrator] WARNING: Webhook failed to start")
                 else:
@@ -71,23 +105,26 @@ class EmailIngestionOrchestrator:
             else:
                 print("\n[Orchestrator] Webhook disabled, skipping...")
             
-            # Phase 1b: Start initial polling
-            print("\n[Orchestrator] Phase 1b: Starting Initial Polling...")
+            # Phase 3: Start Polling
+            print("\n[Orchestrator] Phase 3: Starting Polling Service...")
             if not polling_service.start(mode=polling_mode, interval=polling_interval):
                 raise Exception("Failed to start polling service")
             
             print("[Orchestrator] ✓ Polling service started")
+            
+            # Summary
             print("\n" + "=" * 70)
             print("[Orchestrator] SESSION ACTIVE")
             print("=" * 70)
             
-            # Hiển thị trạng thái phù hợp
             if enable_webhook:
                 print("Status: BOTH_ACTIVE (Polling + Webhook)")
-                print("Polling will process backlog, then switch to Webhook-only")
+                print("Flow: Polling/Webhook → Queue → Batch Processor")
+                print("Polling will fetch backlog, then switch to Webhook-only")
             else:
                 print("Status: POLLING_ACTIVE (Polling only)")
-                print("Running in polling-only mode")
+                print("Flow: Polling → Queue → Batch Processor")
+            
             print("=" * 70)
             
             return True
@@ -114,13 +151,17 @@ class EmailIngestionOrchestrator:
         session_manager.terminate_session(reason)
         
         # Show summary
-        status = session_manager.get_session_status()
+        status = self.get_status()
         print("\n[Orchestrator] Session Summary:")
-        print(f"  Session ID: {status['session_id']}")
-        print(f"  Emails Processed: {status['processed_count']}")
-        print(f"  Emails Pending: {status['pending_count']}")
-        print(f"  Polling Errors: {status['polling_errors']}")
-        print(f"  Webhook Errors: {status['webhook_errors']}")
+        print(f"  Session ID: {status['session']['session_id']}")
+        print(f"  Emails Processed: {status['session']['processed_count']}")
+        print(f"  Emails Pending: {status['session']['pending_count']}")
+        print(f"  Queue Size: {status['queue']['queue_size']}")
+        
+        if 'batch_processor' in status:
+            print(f"  Batches Processed: {status['batch_processor']['batches_processed']}")
+            print(f"  Success Rate: {self._calculate_success_rate(status['batch_processor'])}%")
+        
         print("=" * 70)
         
         self.running = False
@@ -132,21 +173,36 @@ class EmailIngestionOrchestrator:
         polling_status = polling_service.get_status()
         webhook_status = webhook_service.get_status()
         
-        return {
+        queue = get_email_queue()
+        queue_stats = queue.get_stats()
+        
+        status = {
             "running": self.running,
             "session": session_status,
             "polling": polling_status,
             "webhook": webhook_status,
+            "queue": queue_stats,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        
+        # Add batch processor stats if active
+        if self.batch_processor and self.batch_processor.active:
+            status["batch_processor"] = self.batch_processor.get_stats()
+        
+        return status
     
     def trigger_manual_poll(self) -> dict:
-        """Trigger một lần polling thủ công"""
+        """Trigger polling thủ công"""
         if not self.running:
             return {"error": "No active session"}
         
         print("\n[Orchestrator] Manual poll triggered")
         result = polling_service.poll_once()
+        
+        # Show queue status after poll
+        queue_stats = get_email_queue().get_stats()
+        result["queue_size_after"] = queue_stats["queue_size"]
+        
         return result
     
     def wait_for_session(self):
@@ -156,15 +212,22 @@ class EmailIngestionOrchestrator:
             return
         
         print("\n[Orchestrator] Session running. Press CTRL+C to stop.")
+        print("[Orchestrator] Monitoring every 10s...\n")
         
         try:
+            monitor_interval = 10
+            
             while self.running:
-                time.sleep(5)
+                time.sleep(monitor_interval)
                 
-                # Kiểm tra health
+                # Get status
                 status = self.get_status()
                 session_state = SessionState(status['session']['state'])
                 
+                # Print monitoring info
+                self._print_monitoring(status)
+                
+                # Check if terminated
                 if session_state == SessionState.TERMINATED:
                     print("[Orchestrator] Session terminated")
                     break
@@ -173,11 +236,27 @@ class EmailIngestionOrchestrator:
             print("\n[Orchestrator] Interrupted by user")
             self.stop_session(reason="user_interrupt")
     
+    def _print_monitoring(self, status: dict):
+        """Print monitoring information"""
+        queue = status.get('queue', {})
+        batch = status.get('batch_processor', {})
+        
+        print(f"[Monitor] State: {status['session']['state']}")
+        print(f"  Queue: {queue.get('queue_size', 0)} pending, "
+              f"{queue.get('processing_size', 0)} processing")
+        
+        if batch:
+            print(f"  Processor: {batch.get('emails_success', 0)} success, "
+                  f"{batch.get('emails_failed', 0)} failed")
+            
+            if batch.get('avg_batch_time', 0) > 0:
+                print(f"  Performance: {batch['avg_batch_time']:.2f}s/batch")
+    
     def _cleanup(self):
         """Cleanup tất cả services"""
         print("[Orchestrator] Cleaning up services...")
         
-        # Stop polling
+        # Stop polling first (stop feeding queue)
         if polling_service.active:
             polling_service.stop()
             print("[Orchestrator] ✓ Polling stopped")
@@ -186,6 +265,24 @@ class EmailIngestionOrchestrator:
         if webhook_service.active:
             webhook_service.stop()
             print("[Orchestrator] ✓ Webhook stopped")
+        
+        # Let batch processor finish current batch
+        if self.batch_processor and self.batch_processor.active:
+            print("[Orchestrator] Waiting for batch processor to finish...")
+            time.sleep(2)  # Grace period
+            self.batch_processor.stop()
+            print("[Orchestrator] ✓ Batch Processor stopped")
+    
+    def _calculate_success_rate(self, batch_stats: dict) -> float:
+        """Calculate success rate"""
+        success = batch_stats.get('emails_success', 0)
+        failed = batch_stats.get('emails_failed', 0)
+        total = success + failed
+        
+        if total == 0:
+            return 0.0
+        
+        return round((success / total) * 100, 1)
     
     def _signal_handler(self, signum, frame):
         """Handle SIGINT/SIGTERM"""
@@ -193,17 +290,19 @@ class EmailIngestionOrchestrator:
         self.stop_session(reason="signal_interrupt")
         sys.exit(0)
 
+
 # Singleton instance
 orchestrator = EmailIngestionOrchestrator()
+
 
 # ============= CLI Interface =============
 
 def main():
-    """CLI interface cho orchestrator"""
+    """CLI interface với batch processing options"""
     import argparse
     
     parser = argparse.ArgumentParser(
-        description="Email Ingestion Microservice"
+        description="Email Ingestion Microservice with Batch Processing"
     )
     
     parser.add_argument(
@@ -227,6 +326,20 @@ def main():
     )
     
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        help="Batch size for processing (default: 50)"
+    )
+    
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=20,
+        help="Number of parallel workers (default: 20)"
+    )
+    
+    parser.add_argument(
         "--poll-once",
         action="store_true",
         help="Run one-time polling and exit"
@@ -238,7 +351,6 @@ def main():
     if args.poll_once:
         print("[Orchestrator] One-time polling mode")
         
-        # Start minimal session (POLLING_ACTIVE only)
         mode = TriggerMode.MANUAL
         config = SessionConfig(
             session_id=f"onetime_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
@@ -255,13 +367,11 @@ def main():
         print("\n" + "=" * 70)
         print("POLL RESULT:")
         print(f"  Status: {result['status']}")
-        if result['emails_found'] != 0:
-            print(f"  Emails Found: {result['emails_found']}")
-            print(f"  Successed: {result['success']}")
-            print(f"  Failed: {result['failed']}")
-            print(f"  Skipped: {result['skipped']}")
-        else:
-            print(f"  Emails Found: {result['emails_found']}")
+        print(f"  Emails Found: {result.get('emails_found', 0)}")
+        print(f"  Enqueued: {result.get('enqueued', 0)}")
+        print(f"  Skipped: {result.get('skipped', 0)}")
+        print(f"  Fetch Time: {result.get('fetch_time', 0):.2f}s")
+        print(f"  Enqueue Time: {result.get('enqueue_time', 0):.2f}s")
         print("=" * 70)
         return
     
@@ -273,7 +383,9 @@ def main():
     success = orchestrator.start_session(
         polling_mode=polling_mode,
         polling_interval=args.interval,
-        enable_webhook=enable_webhook
+        enable_webhook=enable_webhook,
+        batch_size=args.batch_size,
+        max_workers=args.workers
     )
     
     if not success:
@@ -282,6 +394,7 @@ def main():
     
     # Wait for session
     orchestrator.wait_for_session()
+
 
 if __name__ == "__main__":
     main()
