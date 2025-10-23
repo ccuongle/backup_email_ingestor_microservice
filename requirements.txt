@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+redis
+httpx
+aiohttp
+msal
+aiofiles
+pyngrok
+psutil
+python-dotenv
+httpx[http2]
