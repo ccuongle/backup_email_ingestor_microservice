@@ -57,6 +57,7 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8100"))
 # ============= Polling Settings =============
 DEFAULT_POLLING_INTERVAL = int(os.getenv("POLLING_INTERVAL", "300"))  # 5 phút
 MAX_POLLING_ERRORS = int(os.getenv("MAX_POLLING_ERRORS", "3"))
+MAX_POLL_PAGES = int(os.getenv("MAX_POLL_PAGES", "10"))
 
 # ============= Webhook Settings =============
 WEBHOOK_SUBSCRIPTION_EXPIRY_DAYS = int(os.getenv("WEBHOOK_EXPIRY_DAYS", "3"))

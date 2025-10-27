@@ -16,14 +16,6 @@ def get_webhook_service():
     global webhook_service_instance
     if webhook_service_instance is None:
         from core.webhook_service import webhook_service
-        from core.unified_email_processor import EmailProcessor
-        from core.token_manager import get_token
-        
-        # Khởi tạo processor tại đây nếu chưa có
-        if webhook_service.processor is None:
-            token = get_token()
-            webhook_service.processor = EmailProcessor(token)
-        
         webhook_service_instance = webhook_service
     return webhook_service_instance
 

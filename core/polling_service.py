@@ -7,7 +7,7 @@ import threading
 import requests
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
-
+from utils.config import MAX_POLL_PAGES as max_pages
 from core.session_manager import session_manager, SessionState, TriggerMode
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
@@ -96,14 +96,19 @@ class PollingService:
                 for msg in messages
             ]
             
-            enqueued = self.queue.enqueue_batch(emails_to_enqueue)
+            enqueued_ids = self.queue.enqueue_batch(emails_to_enqueue)
             enqueue_time = time.time() - enqueue_start
             
+            enqueued = len(enqueued_ids)
             skipped = len(messages) - enqueued
             
             print(f"[PollingService] Enqueued {enqueued} emails (took {enqueue_time:.2f}s)")
             if skipped > 0:
                 print(f"[PollingService] Skipped {skipped} emails (already processed/queued)")
+            
+            # Mark enqueued emails as read immediately
+            if enqueued_ids:
+                self._batch_mark_as_read(enqueued_ids)
             
             # Update session stats
             for msg in messages:
@@ -135,37 +140,21 @@ class PollingService:
     def _polling_loop(self):
         """Background loop cho scheduled/fallback polling"""
         print(f"[PollingService] Background polling started")
-        
-        consecutive_empty = 0
-        max_empty_before_stop = 3  # Stop sau 3 lần liên tiếp không có email
-        
+                
         while self.active and not self._stop_event.is_set():
             try:
                 session_status = session_manager.get_session_status()
                 current_state = SessionState(session_status["state"])
                 
-                # Chỉ poll khi ở BOTH_ACTIVE state
-                if current_state != SessionState.BOTH_ACTIVE:
-                    print(f"[PollingService] Paused (state: {current_state.value})")
+                # Vòng lặp này chỉ dành cho FALLBACK mode
+                if self.mode != TriggerMode.FALLBACK:
+                    print(f"[PollingService] Loop paused (mode: {self.mode.value}). Only runs in FALLBACK mode.")
                     time.sleep(self.interval)
                     continue
                 
                 # Poll
-                result = self.poll_once()
-                
-                # Check if should transition to webhook-only
-                if self.mode == TriggerMode.SCHEDULED:
-                    if result["emails_found"] == 0:
-                        consecutive_empty += 1
-                        print(f"[PollingService] No emails found ({consecutive_empty}/{max_empty_before_stop})")
-                        
-                        if consecutive_empty >= max_empty_before_stop:
-                            print(f"[PollingService] Backlog cleared, transitioning to webhook-only")
-                            session_manager.complete_initial_polling()
-                            self.stop()
-                            break
-                    else:
-                        consecutive_empty = 0  # Reset counter
+                print(f"[PollingService] Fallback poll running...")
+                self.poll_once()
                 
                 # Wait before next poll
                 print(f"[PollingService] Waiting {self.interval}s until next poll...")
@@ -181,40 +170,94 @@ class PollingService:
         """
         Fetch unread emails from Graph API
         
-        Args:
-            max_results: Maximum emails to fetch per call
+        This method now supports full pagination to retrieve all unread emails,
+        respecting the `MAX_POLL_PAGES` environment variable as a safeguard.
         """
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
         
-        # Fetch with pagination support
+        all_messages = []
+        page_count = 0
+        
+
+        # Initial URL and parameters
         url = f"{self.GRAPH_URL}/me/messages"
         params = {
             "$filter": "isRead eq false",
             "$top": max_results,
             "$orderby": "receivedDateTime desc"
         }
+
+        while url and page_count < max_pages:
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=30)
+                # Params are only needed for the first request. Subsequent requests use the full nextLink.
+                if params:
+                    params = None 
+
+                if resp.status_code != 200:
+                    print(f"[PollingService] API error during pagination: {resp.status_code} - {resp.text}")
+                    break  # Exit loop on API error
+
+                data = resp.json()
+                messages = data.get("value", [])
+                all_messages.extend(messages)
+                
+                page_count += 1
+                url = data.get("@odata.nextLink")  # Get the next page link
+
+                if url:
+                    print(f"[PollingService] Fetched page {page_count}, more emails available...")
+                else:
+                    print(f"[PollingService] Fetched final page ({page_count}). No more pages.")
+
+            except requests.exceptions.RequestException as e:
+                print(f"[PollingService] Network error during pagination: {e}")
+                break  # Exit loop on network error
+
+        if page_count >= max_pages and url:
+            print(f"[PollingService] WARN: Reached max poll pages limit ({max_pages}). More emails may be available.")
+
+        return all_messages
+
+    def _batch_mark_as_read(self, email_ids: List[str]):
+        """
+        Mark a batch of emails as read using Microsoft Graph batching.
+        This is more efficient than sending individual requests.
+        """
+        if not email_ids:
+            return
+
+        print(f"[PollingService] Marking {len(email_ids)} emails as read...")
+        token = get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
         
+        batch_payload = {
+            "requests": [
+                {
+                    "id": str(i + 1),
+                    "method": "PATCH",
+                    "url": f"/me/messages/{email_id}",
+                    "body": {"isRead": True},
+                    "headers": {"Content-Type": "application/json"}
+                } for i, email_id in enumerate(email_ids)
+            ]
+        }
+
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
-            
-            if resp.status_code != 200:
-                print(f"[PollingService] API error: {resp.status_code} - {resp.text}")
-                return []
-            
-            data = resp.json()
-            messages = data.get("value", [])
-            
-            # TODO: Handle pagination if needed (@odata.nextLink)
-            next_link = data.get("@odata.nextLink")
-            if next_link:
-                print(f"[PollingService] More emails available (pagination not implemented)")
-            
-            return messages
-        
+            response = requests.post(
+                f"{self.GRAPH_URL}/$batch",
+                headers=headers,
+                json=batch_payload,
+                timeout=60
+            )
+            response.raise_for_status()
+            print(f"[PollingService] ✓ Successfully marked {len(email_ids)} as read.")
         except requests.exceptions.RequestException as e:
-            print(f"[PollingService] Network error: {e}")
-            return []
+            print(f"[PollingService] ERROR: Failed to batch mark as read: {e}")
     
     def get_status(self) -> Dict:
         """Lấy trạng thái hiện tại"""

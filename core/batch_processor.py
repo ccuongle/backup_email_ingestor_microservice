@@ -118,13 +118,16 @@ class BatchEmailProcessor:
                 # Check queue stats
                 queue_stats = self.queue.get_stats()
                 queue_size = queue_stats["queue_size"]
+                shutting_down = self._stop_event.is_set()
                 
-                if queue_size == 0:
-                    # No emails, sleep longer
+                # Chỉ xử lý khi có đủ 1 batch, hoặc khi đang shutdown và có email tồn
+                if queue_size < self.batch_size and not (shutting_down and queue_size > 0):
+                    # Chưa đủ batch, đợi
                     time.sleep(self.fetch_interval)
                     continue
                 
-                print(f"\n[BatchProcessor] Queue size: {queue_size}")
+                if queue_size > 0:
+                    print(f"\n[BatchProcessor] Queue size: {queue_size}. Triggering batch processing.")
                 
                 # Fetch batch
                 batch = self.queue.dequeue_batch(self.batch_size)

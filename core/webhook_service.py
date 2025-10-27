@@ -12,7 +12,7 @@ from pyngrok import ngrok
 import psutil
 import time
 from core.session_manager import session_manager, SessionState
-from core.unified_email_processor import EmailProcessor
+from core.queue_manager import get_email_queue
 from core.token_manager import get_token
 
 class WebhookService:
@@ -25,7 +25,7 @@ class WebhookService:
         self.active = False
         self.public_url: Optional[str] = None
         self.subscription_id: Optional[str] = None
-        self.processor: Optional[EmailProcessor] = None
+        self.queue = get_email_queue()
         self.ngrok_tunnel = None
         self.error_count = 0
         self.max_errors = 5
@@ -62,10 +62,6 @@ class WebhookService:
             
             # Step 5: Start renewal watcher
             self._start_renewal_watcher()
-            
-            # Initialize processor
-            token = get_token()
-            self.processor = EmailProcessor(token)
             
             self.active = True
             self.error_count = 0
@@ -105,30 +101,36 @@ class WebhookService:
     def handle_notification(self, notification_data: Dict) -> Dict:
         """Xử lý notification từ Microsoft Graph"""
         try:
-            processed_count = 0
+            enqueued_count = 0
+            notifications = notification_data.get("value", [])
             
-            for notif in notification_data.get("value", []):
+            for notif in notifications:
                 msg_id = notif.get("resourceData", {}).get("id")
                 if not msg_id:
                     continue
                 
                 # Kiểm tra duplicate
-                if session_manager.is_email_processed(msg_id):
+                if self.queue.is_in_queue(msg_id) or session_manager.is_email_processed(msg_id):
+                    print(f"[WebhookService] Skipping duplicate email: {msg_id}")
                     continue
                 
                 # Fetch email detail
                 message = self._fetch_email_detail(msg_id)
                 if message:
-                    # Process email
-                    if self.processor.process_email(message, source="webhook"):
-                        processed_count += 1
+                    # Enqueue email for batch processing
+                    enqueued_id = self.queue.enqueue(msg_id, message)
+                    if enqueued_id:
+                        session_manager.register_pending_email(msg_id)
+                        enqueued_count += 1
+                        print(f"[WebhookService] Enqueued email: {msg_id}")
+                        self._mark_as_read(enqueued_id)  # Mark as read immediately
             
             # Reset error count khi thành công
             self.error_count = 0
             
             return {
                 "status": "success",
-                "processed": processed_count
+                "enqueued": enqueued_count
             }
         
         except Exception as e:
@@ -170,6 +172,26 @@ class WebhookService:
         except Exception as e:
             print(f"[WebhookService] Fetch email error: {e}")
             return None
+    
+    def _mark_as_read(self, message_id: str):
+        """Mark a single email as read in a background thread."""
+        token = get_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        url = f"{self.GRAPH_URL}/me/messages/{message_id}"
+        body = {"isRead": True}
+
+        def do_patch():
+            try:
+                requests.patch(url, headers=headers, json=body, timeout=10)
+                print(f"[WebhookService] ✓ Marked {message_id} as read.")
+            except requests.exceptions.RequestException as e:
+                print(f"[WebhookService] ERROR: Failed to mark {message_id} as read: {e}")
+        
+        # Run in a separate thread to not block the webhook response
+        threading.Thread(target=do_patch, daemon=True).start()
     
     def _start_ngrok(self) -> str:
         """Khởi động ngrok tunnel riêng cho webhook"""

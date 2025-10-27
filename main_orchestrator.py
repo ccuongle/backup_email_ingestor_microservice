@@ -106,11 +106,18 @@ class EmailIngestionOrchestrator:
                 print("\n[Orchestrator] Webhook disabled, skipping...")
             
             # Phase 3: Start Polling
-            print("\n[Orchestrator] Phase 3: Starting Polling Service...")
-            if not polling_service.start(mode=polling_mode, interval=polling_interval):
-                raise Exception("Failed to start polling service")
-            
-            print("[Orchestrator] ✓ Polling service started")
+            print("\n[Orchestrator] Phase 3: Performing initial poll to clear backlog...")
+            # Chỉ poll 1 lần duy nhất khi khởi động để dọn backlog
+            # Polling định kỳ chỉ được kích hoạt khi fallback
+            if polling_mode == TriggerMode.SCHEDULED:
+                result = polling_service.poll_once()
+                print(f"[Orchestrator] ✓ Initial poll complete. Found: {result.get('emails_found', 0)}, Enqueued: {result.get('enqueued', 0)}")
+                
+                # Nếu có webhook, chuyển sang chế độ webhook-only ngay lập tức
+                if enable_webhook:
+                    session_manager.complete_initial_polling()
+            else:
+                print("[Orchestrator] Manual mode: Skipping initial poll.")
             
             # Summary
             print("\n" + "=" * 70)
@@ -119,8 +126,7 @@ class EmailIngestionOrchestrator:
             
             if enable_webhook:
                 print("Status: BOTH_ACTIVE (Polling + Webhook)")
-                print("Flow: Polling/Webhook → Queue → Batch Processor")
-                print("Polling will fetch backlog, then switch to Webhook-only")
+                print("Flow: Initial Poll -> Webhook → Queue → Batch Processor")
             else:
                 print("Status: POLLING_ACTIVE (Polling only)")
                 print("Flow: Polling → Queue → Batch Processor")

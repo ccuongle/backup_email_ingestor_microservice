@@ -46,24 +46,20 @@ class EmailProcessor:
         print(f"  From: {sender}")
         
         try:
-            # Step 1: Đánh dấu đã đọc
-            if not self._mark_as_read(msg_id):
-                print(f"[EmailProcessor] Warning: Could not mark as read")
-            
-            # Step 2: Lọc spam
+            # Step 1: Lọc spam
             if self._is_spam(sender):
                 print(f"[EmailProcessor] SPAM detected, moving to junk")
                 self._move_to_junk(msg_id)
                 session_manager.register_processed_email(msg_id)
                 return True
             
-            # Step 3: Lưu attachments
+            # Step 2: Lưu attachments
             self._save_attachments(msg_id)
             
-            # Step 4: Gửi metadata đến MS2 (Classifier)
+            # Step 3: Gửi metadata đến MS2 (Classifier)
             self._forward_to_classifier(message)
             
-            # Step 5: Gửi metadata đến MS4 (Persistence)
+            # Step 4: Gửi metadata đến MS4 (Persistence)
             self._forward_to_persistence(message)
             
             # Đăng ký đã xử lý
@@ -104,21 +100,6 @@ class EmailProcessor:
     def _is_spam(self, sender: str) -> bool:
         """Kiểm tra spam"""
         return any(pattern in sender for pattern in SPAM_PATTERNS)
-    
-    def _mark_as_read(self, message_id: str) -> bool:
-        """Đánh dấu email đã đọc"""
-        patch_url = f"https://graph.microsoft.com/v1.0/me/messages/{message_id}"
-        try:
-            resp = requests.patch(
-                patch_url,
-                headers={**self.headers, "Content-Type": "application/json"},
-                json={"isRead": True},
-                timeout=10
-            )
-            return resp.status_code in (200, 202)
-        except Exception as e:
-            print(f"[EmailProcessor] Mark as read error: {e}")
-            return False
     
     def _move_to_junk(self, message_id: str):
         """Di chuyển email vào Junk"""

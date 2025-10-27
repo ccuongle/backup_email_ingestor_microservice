@@ -23,7 +23,7 @@ class EmailQueue:
     def __init__(self):
         self.redis = get_redis_storage()
     
-    def enqueue(self, email_id: str, email_data: Dict, priority: Optional[float] = None) -> bool:
+    def enqueue(self, email_id: str, email_data: Dict, priority: Optional[float] = None) -> Optional[str]:
         """
         Thêm email vào queue
         
@@ -34,15 +34,15 @@ class EmailQueue:
                      None = timestamp (FIFO)
         
         Returns:
-            True if enqueued, False if already in queue/processed
+            email_id if enqueued, None if already in queue/processed
         """
         # Kiểm tra đã processed chưa
         if self.redis.is_email_processed(email_id):
-            return False
+            return None
         
         # Kiểm tra đã trong queue chưa
         if self.redis.redis.zscore(self.QUEUE_KEY, email_id) is not None:
-            return False
+            return None
         
         # Set priority
         if priority is None:
@@ -59,9 +59,9 @@ class EmailQueue:
         # Add to queue
         self.redis.redis.zadd(self.QUEUE_KEY, {email_id: priority})
         
-        return True
+        return email_id
     
-    def enqueue_batch(self, emails: List[tuple]) -> int:
+    def enqueue_batch(self, emails: List[tuple]) -> List[str]:
         """
         Batch enqueue multiple emails
         
@@ -69,9 +69,9 @@ class EmailQueue:
             emails: List of (email_id, email_data, priority)
         
         Returns:
-            Number of emails enqueued
+            List of email_ids that were successfully enqueued
         """
-        enqueued = 0
+        enqueued_ids = []
         
         # Batch check processed
         email_ids = [e[0] for e in emails]
@@ -97,10 +97,10 @@ class EmailQueue:
             
             to_insert[email_id] = priority
             to_store[email_id] = email_data
-            enqueued += 1
+            enqueued_ids.append(email_id)
         
         if not to_insert:
-            return 0
+            return []
         
         # Batch insert
         pipeline = self.redis.redis.pipeline()
@@ -118,7 +118,7 @@ class EmailQueue:
         pipeline.zadd(self.QUEUE_KEY, to_insert)
         pipeline.execute()
         
-        return enqueued
+        return enqueued_ids
     
     def dequeue_batch(self, batch_size: int = 50) -> List[tuple]:
         """
@@ -276,6 +276,23 @@ class EmailQueue:
         
         print(f"[EmailQueue] Re-queued {len(timed_out)} timed out emails")
         return len(timed_out)
+    
+    def is_in_queue(self, email_id: str) -> bool:
+        """
+        Kiểm tra email đã có trong hàng đợi (queue) hoặc đang được xử lý (processing) chưa.
+
+        Args:
+            email_id: ID của email cần kiểm tra.
+
+        Returns:
+            True nếu email tồn tại trong queue hoặc processing, ngược lại là False.
+        """
+        # Check in the main queue (Sorted Set)
+        if self.redis.redis.zscore(self.QUEUE_KEY, email_id) is not None:
+            return True
+
+        # Check in the processing queue (Sorted Set)
+        return self.redis.redis.zscore(self.PROCESSING_KEY, email_id) is not None
     
     def get_stats(self) -> Dict:
         """Get queue statistics"""
