@@ -217,8 +217,9 @@ class WebhookService:
         ]
         self.server_process = subprocess.Popen(cmd)
     
-    def _create_subscription(self, token: str) -> Optional[str]:
+    def _create_subscription(self) -> Optional[str]:
         """Tạo Microsoft Graph subscription"""
+        token = get_token()
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
@@ -259,11 +260,12 @@ class WebhookService:
             print(f"[WebhookService] Subscription error: {e}")
             return None
     
-    def _delete_subscription(self, token: str):
+    def _delete_subscription(self):
         """Xóa subscription"""
         if not self.subscription_id:
             return
         
+        token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
         
         try:
