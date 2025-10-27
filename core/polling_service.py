@@ -175,11 +175,9 @@ class PollingService:
         """
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
-        
         all_messages = []
         page_count = 0
         
-
         # Initial URL and parameters
         url = f"{self.GRAPH_URL}/me/messages"
         params = {
@@ -191,7 +189,7 @@ class PollingService:
         while url and page_count < max_pages:
             try:
                 resp = requests.get(url, headers=headers, params=params, timeout=30)
-                # Params are only needed for the first request. Subsequent requests use the full nextLink.
+                # Params are only needed for the first request. Subsequent requests use the full nextLink, so we clear it.
                 if params:
                     params = None 
 
@@ -210,7 +208,6 @@ class PollingService:
                     print(f"[PollingService] Fetched page {page_count}, more emails available...")
                 else:
                     print(f"[PollingService] Fetched final page ({page_count}). No more pages.")
-
             except requests.exceptions.RequestException as e:
                 print(f"[PollingService] Network error during pagination: {e}")
                 break  # Exit loop on network error

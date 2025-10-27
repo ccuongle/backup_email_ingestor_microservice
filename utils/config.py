@@ -66,12 +66,15 @@ MAX_WEBHOOK_ERRORS = int(os.getenv("MAX_WEBHOOK_ERRORS", "5"))
 
 
 # ============= Spam Patterns =============
-SPAM_PATTERNS = [
-    "accountprotection.microsoft.com",
-    "security-noreply@",
-    "account-security-noreply@accountprotection.microsoft.com",
+# Load from environment variable as a comma-separated string, then split into a list.
+# This allows updating spam patterns without changing the code.
+SPAM_PATTERNS_STR = os.getenv("SPAM_PATTERNS", (
+    "accountprotection.microsoft.com,"
+    "security-noreply@,"
+    "account-security-noreply@accountprotection.microsoft.com,"
     "noreply@email.microsoft.com"
-]
+))
+SPAM_PATTERNS = [pattern.strip() for pattern in SPAM_PATTERNS_STR.split(',') if pattern.strip()]
 
 # ============= Logging Settings =============
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
