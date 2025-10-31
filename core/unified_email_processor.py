@@ -6,14 +6,14 @@ Xử lý email thống nhất cho cả polling và webhook
 import json
 import os
 import base64
-import requests
+import httpx
+from httpx import Client
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 from core.session_manager import session_manager
 from utils.config import (
     ATTACH_DIR,
     SPAM_PATTERNS,
-    MS2_CLASSIFIER_BASE_URL,
     MS4_PERSISTENCE_BASE_URL
 )
 
@@ -23,6 +23,7 @@ class EmailProcessor:
     def __init__(self, token: str):
         self.token = token
         self.headers = {"Authorization": f"Bearer {token}"}
+        self.client = httpx.Client(headers=self.headers, timeout=10)
         os.makedirs(ATTACH_DIR, exist_ok=True)
     
     def process_email(self, message: Dict, source: str = "unknown") -> bool:
@@ -56,10 +57,7 @@ class EmailProcessor:
             # Step 2: Lưu attachments
             self._save_attachments(msg_id)
             
-            # Step 3: Gửi metadata đến MS2 (Classifier)
-            self._forward_to_classifier(message)
-            
-            # Step 4: Gửi metadata đến MS4 (Persistence)
+            # Step 3: Gửi metadata đến MS4 (Persistence)
             self._forward_to_persistence(message)
             
             # Đăng ký đã xử lý
@@ -106,7 +104,7 @@ class EmailProcessor:
         move_url = f"https://graph.microsoft.com/v1.0/me/messages/{message_id}/move"
         move_body = {"destinationId": "junkemail"}
         try:
-            requests.post(move_url, headers=self.headers, json=move_body, timeout=10)
+            self.client.post(move_url, json=move_body)
         except Exception as e:
             print(f"[EmailProcessor] Move to junk error: {e}")
     
@@ -114,7 +112,7 @@ class EmailProcessor:
         """Lưu file đính kèm"""
         url = f"https://graph.microsoft.com/v1.0/me/messages/{message_id}/attachments"
         try:
-            resp = requests.get(url, headers=self.headers, timeout=10)
+            resp = self.client.get(url)
             if resp.status_code != 200:
                 return
             
@@ -137,31 +135,7 @@ class EmailProcessor:
         except Exception as e:
             print(f"[EmailProcessor] Save attachments error: {e}")
     
-    def _forward_to_classifier(self, message: Dict):
-        """Gửi metadata đến MS2 Classifier"""
-        try:
-            metadata = {
-                "id": message.get("id"),
-                "subject": message.get("subject"),
-                "bodyPreview": message.get("bodyPreview"),
-                "hasAttachments": message.get("hasAttachments", False),
-                "sender": message.get("from", {}).get("emailAddress", {}).get("address", ""),
-                "receivedDateTime": message.get("receivedDateTime"),
-                "raw_message": json.dumps(message)
-            }
-            
-            response = requests.post(
-                MS2_CLASSIFIER_BASE_URL,
-                json=metadata,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                print(f"[EmailProcessor] Forwarded to MS2 successfully")
-            else:
-                print(f"[EmailProcessor] MS2 error: {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"[EmailProcessor] Failed to connect to MS2: {e}")
+
     
     def _forward_to_persistence(self, message: Dict):
         """Gửi metadata đến MS4 Persistence"""
@@ -177,15 +151,19 @@ class EmailProcessor:
             
             print(f"[EmailProcessor] Sending metadata to MS4: {metadata}")
             
-            response = requests.post(
+            response = self.client.post(
                 f"{MS4_PERSISTENCE_BASE_URL}/metadata",
-                json=metadata,
-                timeout=10
+                json=metadata
             )
             
             if response.status_code in (200, 201):
                 print(f"[EmailProcessor] Persisted to MS4 successfully")
             else:
                 print(f"[EmailProcessor] MS4 error: {response.status_code}")
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             print(f"[EmailProcessor] Failed to connect to MS4: {e}")
+    
+    def close(self):
+        """Closes the httpx client."""
+        self.client.close()
+        print("[EmailProcessor] HTTPX client closed.")

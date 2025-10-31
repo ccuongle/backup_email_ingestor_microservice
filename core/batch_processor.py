@@ -22,29 +22,31 @@ class BatchEmailProcessor:
     """
     
     def __init__(
-        self,
-        batch_size: int = 50,
-        max_workers: int = 20,
-        fetch_interval: float = 2.0
-    ):
+    self,
+    batch_size: int = 50,
+    max_workers: int = 20,
+    fetch_interval: float = 2.0,
+    email_processor: Optional[EmailProcessor] = None
+):
         """
         Args:
             batch_size: Number of emails per batch
-            max_workers: Number of parallel workers
+            max_workers: Parallel workers
             fetch_interval: Seconds between queue checks
+            email_processor: Optional pre-injected EmailProcessor (for testing)
         """
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.fetch_interval = fetch_interval
-        
+
         self.queue = get_email_queue()
-        self.processor: Optional[EmailProcessor] = None
+        self.processor = email_processor  # 👈 Không khởi tạo ngay, chỉ lưu nếu test cung cấp
         self.executor: Optional[ThreadPoolExecutor] = None
-        
+
         self.active = False
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        
+
         # Stats
         self.stats = {
             "batches_processed": 0,
@@ -53,7 +55,7 @@ class BatchEmailProcessor:
             "total_processing_time": 0.0,
             "avg_batch_time": 0.0
         }
-    
+
     def start(self) -> bool:
         """Start batch processor"""
         if self.active:
@@ -105,6 +107,10 @@ class BatchEmailProcessor:
         if self.executor:
             self.executor.shutdown(wait=True, cancel_futures=False)
             self.executor = None
+
+        # Close the email processor client
+        if self.processor:
+            self.processor.close()
         
         print("[BatchProcessor] Stopped")
         self._print_stats()
@@ -182,7 +188,8 @@ class BatchEmailProcessor:
             {"success": int, "failed": int}
         """
         result = {"success": 0, "failed": 0}
-        
+        if self.executor is None:
+            self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
         # Submit all tasks
         futures = {}
         for email_id, email_data in batch:
@@ -231,6 +238,9 @@ class BatchEmailProcessor:
             True if success
         """
         try:
+            if self.processor is None:
+                token = get_token()
+                self.processor = EmailProcessor(token)
             # Use the unified processor
             success = self.processor.process_email(
                 message=email_data,
@@ -244,32 +254,54 @@ class BatchEmailProcessor:
             return False
     
     def get_stats(self) -> Dict:
-        """Get processor statistics"""
-        return {
+        """Get processor statistics (with KPI metrics)"""
+        total_emails = self.stats["emails_success"] + self.stats["emails_failed"]
+        throughput = (
+            total_emails / self.stats["total_processing_time"]
+            if self.stats["total_processing_time"] > 0 else 0
+        )
+        success_rate = (
+            (self.stats["emails_success"] / total_emails) * 100
+            if total_emails > 0 else 0
+        )
+
+        base = {
             "active": self.active,
             "batch_size": self.batch_size,
             "max_workers": self.max_workers,
             **self.stats,
+            "throughput": round(throughput, 2),
+            "success_rate": round(success_rate, 2),
             "queue_stats": self.queue.get_stats()
         }
+        return base
+
     
     def _print_stats(self):
-        """Print final statistics"""
+        """Print final statistics & export KPI"""
         print("\n" + "=" * 70)
-        print("BATCH PROCESSOR STATISTICS")
+        print("BATCH PROCESSOR STATISTICS (FINAL KPI)")
         print("=" * 70)
-        print(f"Batches Processed: {self.stats['batches_processed']}")
-        print(f"Emails Success: {self.stats['emails_success']}")
-        print(f"Emails Failed: {self.stats['emails_failed']}")
-        print(f"Avg Batch Time: {self.stats['avg_batch_time']:.2f}s")
         
-        if self.stats['total_processing_time'] > 0:
-            total_emails = self.stats['emails_success'] + self.stats['emails_failed']
-            throughput = total_emails / self.stats['total_processing_time']
-            print(f"Throughput: {throughput:.1f} emails/s")
-        
-        print("=" * 70)
+        total_emails = self.stats["emails_success"] + self.stats["emails_failed"]
+        throughput = (
+            total_emails / self.stats["total_processing_time"]
+            if self.stats["total_processing_time"] > 0 else 0
+        )
+        success_rate = (
+            (self.stats["emails_success"] / total_emails) * 100
+            if total_emails > 0 else 0
+        )
 
+        print(f"🧩 Batches Processed : {self.stats['batches_processed']}")
+        print(f"✅ Emails Success    : {self.stats['emails_success']}")
+        print(f"❌ Emails Failed     : {self.stats['emails_failed']}")
+        print(f"⚙️ Avg Batch Time    : {self.stats['avg_batch_time']:.2f}s")
+        print(f"🚀 Throughput        : {throughput:.1f} emails/s")
+        print(f"🎯 Success Rate      : {success_rate:.1f}%")
+        
+        print("=" * 70)
+        
 
 # Singleton
 _batch_processor_instance = None

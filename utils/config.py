@@ -39,12 +39,12 @@ if not CLIENT_ID or not CLIENT_SECRET:
         "Please set them in .env file"
     )
 
-# ============= Downstream Services =============
-MS2_CLASSIFIER_BASE_URL = os.getenv(
-    "MS2_CLASSIFIER_BASE_URL",
-    "http://localhost:8001/classify"
-)
+# ============= Graph API Rate Limiting (NEW - Story 2.1) =============
+GRAPH_API_RATE_LIMIT_THRESHOLD = int(os.getenv("GRAPH_API_RATE_LIMIT_THRESHOLD", "100"))
+GRAPH_API_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("GRAPH_API_RATE_LIMIT_WINDOW_SECONDS", "60"))
+GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS = int(os.getenv("GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS", "30"))
 
+# ============= Downstream Services =============
 MS4_PERSISTENCE_BASE_URL = os.getenv(
     "MS4_PERSISTENCE_BASE_URL",
     "http://localhost:8002"
@@ -63,7 +63,6 @@ MAX_POLL_PAGES = int(os.getenv("MAX_POLL_PAGES", "10"))
 WEBHOOK_SUBSCRIPTION_EXPIRY_DAYS = int(os.getenv("WEBHOOK_EXPIRY_DAYS", "3"))
 WEBHOOK_RENEWAL_THRESHOLD_HOURS = int(os.getenv("WEBHOOK_RENEWAL_HOURS", "1"))
 MAX_WEBHOOK_ERRORS = int(os.getenv("MAX_WEBHOOK_ERRORS", "5"))
-
 
 # ============= Spam Patterns =============
 # Load from environment variable as a comma-separated string, then split into a list.
@@ -88,7 +87,6 @@ GRAPH_SUBSCRIPTIONS_URL = f"{GRAPH_BASE_URL}/subscriptions"
 
 # ============= Feature Flags =============
 ENABLE_ATTACHMENT_SAVE = os.getenv("ENABLE_ATTACHMENT_SAVE", "true").lower() == "true"
-ENABLE_MS2_FORWARD = os.getenv("ENABLE_MS2_FORWARD", "true").lower() == "true"
 ENABLE_MS4_FORWARD = os.getenv("ENABLE_MS4_FORWARD", "true").lower() == "true"
 ENABLE_SPAM_FILTER = os.getenv("ENABLE_SPAM_FILTER", "true").lower() == "true"
 
@@ -103,11 +101,18 @@ def validate_config():
     if not CLIENT_SECRET:
         errors.append("CLIENT_SECRET is required")
     
-    # Move port casting before validation
-    # API_PORT = int(os.getenv("API_PORT", "8000"))
-    # WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8100"))
     if API_PORT == WEBHOOK_PORT:
         errors.append(f"API_PORT ({API_PORT}) and WEBHOOK_PORT ({WEBHOOK_PORT}) must be different")
+    
+    # Validate rate limit configuration
+    if GRAPH_API_RATE_LIMIT_THRESHOLD <= 0:
+        errors.append(f"GRAPH_API_RATE_LIMIT_THRESHOLD must be positive (got {GRAPH_API_RATE_LIMIT_THRESHOLD})")
+    
+    if GRAPH_API_RATE_LIMIT_WINDOW_SECONDS <= 0:
+        errors.append(f"GRAPH_API_RATE_LIMIT_WINDOW_SECONDS must be positive (got {GRAPH_API_RATE_LIMIT_WINDOW_SECONDS})")
+    
+    if GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS < 0:
+        errors.append(f"GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS must be non-negative (got {GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS})")
     
     if errors:
         raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -128,16 +133,19 @@ def print_config():
     print(f"API Port: {API_PORT}")
     print(f"Webhook Port: {WEBHOOK_PORT}")
     print("-" * 70)
-    print(f"MS2 Classifier: {MS2_CLASSIFIER_BASE_URL}")
     print(f"MS4 Persistence: {MS4_PERSISTENCE_BASE_URL}")
     print("-" * 70)
     print(f"Polling Interval: {DEFAULT_POLLING_INTERVAL}s")
     print(f"Webhook Expiry: {WEBHOOK_SUBSCRIPTION_EXPIRY_DAYS} days")
     print(f"Renewal Threshold: {WEBHOOK_RENEWAL_THRESHOLD_HOURS}h")
     print("-" * 70)
+    print(f"Graph API Rate Limiting:")
+    print(f"  Threshold: {GRAPH_API_RATE_LIMIT_THRESHOLD} requests")
+    print(f"  Window: {GRAPH_API_RATE_LIMIT_WINDOW_SECONDS}s")
+    print(f"  Retry Delay: {GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS}s")
+    print("-" * 70)
     print(f"Feature Flags:")
     print(f"  Attachment Save: {ENABLE_ATTACHMENT_SAVE}")
-    print(f"  MS2 Forward: {ENABLE_MS2_FORWARD}")
     print(f"  MS4 Forward: {ENABLE_MS4_FORWARD}")
     print(f"  Spam Filter: {ENABLE_SPAM_FILTER}")
     print("=" * 70)

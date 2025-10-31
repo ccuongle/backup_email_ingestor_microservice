@@ -23,3 +23,6 @@ dist/
 # Logs
 *.log
 
+# BMAD (local only)
+.bmad-core/
+.bmad-*/

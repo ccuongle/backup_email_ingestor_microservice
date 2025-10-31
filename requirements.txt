@@ -11,3 +11,8 @@ pyngrok
 psutil
 python-dotenv
 httpx[http2]
+pytest 
+pytest-mock 
+pytest-asyncio 
+pytest-timeout 
+pytest-cov

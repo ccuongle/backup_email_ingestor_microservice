@@ -7,11 +7,16 @@ import threading
 import requests
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
-from utils.config import MAX_POLL_PAGES as max_pages
+from utils.config import (
+    MAX_POLL_PAGES as max_pages,
+    GRAPH_API_RATE_LIMIT_THRESHOLD,
+    GRAPH_API_RATE_LIMIT_WINDOW_SECONDS,
+    GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS
+)
 from core.session_manager import session_manager, SessionState, TriggerMode
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
-
+from concurrent_storage.redis_manager import get_redis_storage
 
 class PollingService:
     """
@@ -20,6 +25,7 @@ class PollingService:
     """
     
     GRAPH_URL = "https://graph.microsoft.com/v1.0"
+    RATE_LIMIT_KEY = "graph_api_polling"
     
     def __init__(self):
         self.active = False
@@ -28,6 +34,7 @@ class PollingService:
         self.thread: Optional[threading.Thread] = None
         self.queue = get_email_queue()
         self._stop_event = threading.Event()
+        self.redis = get_redis_storage()
     
     def start(self, mode: TriggerMode = TriggerMode.SCHEDULED, interval: int = 300):
         """Khởi động polling service"""
@@ -63,6 +70,36 @@ class PollingService:
             self.thread.join(timeout=5)
         
         print(f"[PollingService] Stopped")
+
+# Adding throttle proof:
+    
+    def _check_and_wait_for_rate_limit(self) -> bool:
+        """
+        Check rate limit before making Graph API call.
+        If limit exceeded, pause execution for configured duration.
+        
+        Returns:
+            True if request is allowed, False if service should stop
+        """
+        allowed, current_count = self.redis.check_rate_limit(
+            key=self.RATE_LIMIT_KEY,
+            limit=GRAPH_API_RATE_LIMIT_THRESHOLD,
+            window=GRAPH_API_RATE_LIMIT_WINDOW_SECONDS
+        )
+        
+        if not allowed:
+            print(f"[PollingService] Rate limit exceeded ({current_count}/{GRAPH_API_RATE_LIMIT_THRESHOLD})")
+            print(f"[PollingService] Pausing for {GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS}s before retry...")
+            
+            # Wait with ability to check stop event
+            if self._stop_event.wait(timeout=GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS):
+                # Stop event was set during wait
+                return False
+            
+            # After wait, check rate limit again
+            return self._check_and_wait_for_rate_limit()
+        
+        return True
     
     def poll_once(self) -> Dict:
         """
