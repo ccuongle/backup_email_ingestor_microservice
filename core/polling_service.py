@@ -4,7 +4,7 @@ Fetch emails và đẩy vào queue thay vì xử lý trực tiếp
 """
 import time
 import threading
-import requests
+import httpx
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 from utils.config import (
@@ -225,7 +225,8 @@ class PollingService:
 
         while url and page_count < max_pages:
             try:
-                resp = requests.get(url, headers=headers, params=params, timeout=30)
+                with httpx.Client() as client:
+                    resp = client.get(url, headers=headers, params=params, timeout=30)
                 # Params are only needed for the first request. Subsequent requests use the full nextLink, so we clear it.
                 if params:
                     params = None 
@@ -245,9 +246,9 @@ class PollingService:
                     print(f"[PollingService] Fetched page {page_count}, more emails available...")
                 else:
                     print(f"[PollingService] Fetched final page ({page_count}). No more pages.")
-            except requests.exceptions.RequestException as e:
+            except httpx.RequestError as e:
                 print(f"[PollingService] Network error during pagination: {e}")
-                break  # Exit loop on network error
+                raise  # Re-raise the exception
 
         if page_count >= max_pages and url:
             print(f"[PollingService] WARN: Reached max poll pages limit ({max_pages}). More emails may be available.")
@@ -282,15 +283,16 @@ class PollingService:
         }
 
         try:
-            response = requests.post(
-                f"{self.GRAPH_URL}/$batch",
-                headers=headers,
-                json=batch_payload,
-                timeout=60
-            )
+            with httpx.Client() as client:
+                response = client.post(
+                    f"{self.GRAPH_URL}/$batch",
+                    headers=headers,
+                    json=batch_payload,
+                    timeout=60
+                )
             response.raise_for_status()
             print(f"[PollingService] ✓ Successfully marked {len(email_ids)} as read.")
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             print(f"[PollingService] ERROR: Failed to batch mark as read: {e}")
     
     def get_status(self) -> Dict:

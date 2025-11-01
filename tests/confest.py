@@ -6,10 +6,20 @@ import pytest
 import os
 import sys
 from datetime import datetime, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+from pytest_mock import session_mocker
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def mock_env_and_redis(session_mocker):
+    """Global fixture to mock environment variables and Redis connection."""
+    session_mocker.patch.dict(os.environ, {"CLIENT_ID": "dummy_id", "CLIENT_SECRET": "dummy_secret"})
+    session_mocker.patch("concurrent_storage.redis_manager.RedisStorageManager", MagicMock())
+    session_mocker.patch("concurrent_storage.redis_manager.get_redis_storage", MagicMock())
+
 
 
 @pytest.fixture(scope="session")

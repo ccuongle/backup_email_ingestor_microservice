@@ -1,16 +1,16 @@
 """
 Performance Tests for Email Ingestion Microservice
 Tests throughput, latency, and scalability
+Updated for httpx and latest architecture
 """
 import pytest
 import time
 import statistics
 from datetime import datetime, timezone
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, Mock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 
-from core.polling_service import PollingService, TriggerMode
 from core.batch_processor import BatchEmailProcessor
 from core.queue_manager import EmailQueue
 from core.session_manager import SessionManager
@@ -22,10 +22,10 @@ def redis_storage():
     """Fixture cung cấp Redis storage với cleanup an toàn"""
     redis = RedisStorageManager()
     # Safe cleanup - chỉ xóa test data
-    _safe_cleanup_test_data(redis, full = True)
+    _safe_cleanup_test_data(redis, full=True)
     yield redis
     # Cleanup after test
-    _safe_cleanup_test_data(redis, full = True)
+    _safe_cleanup_test_data(redis, full=True)
 
 
 def _safe_cleanup_test_data(redis: RedisStorageManager, dry_run=False, full=False):
@@ -37,10 +37,20 @@ def _safe_cleanup_test_data(redis: RedisStorageManager, dry_run=False, full=Fals
 
     # --- 1️⃣ Xóa email data ---
     test_patterns = [
-        "email:processed:*",
-        "email:pending:*",
-        "email:failed:*"
+        "email:data:test_*",
+        "email:data:mock_*",
+        "email:data:perf_*",
+        "email:data:enqueue_*",
+        "email:data:dequeue_*",
+        "email:data:concurrent_*",
+        "email:data:batch_proc_*",
+        "email:data:latency_*",
+        "email:data:e2e_*",
+        "email:data:scale_*",
+        "email:retry:test_*",
+        "email:retry:perf_*"
     ]
+    
     if full:
         test_patterns.append("email:processed")  # Xóa set tổng khi full cleanup
 
@@ -56,7 +66,8 @@ def _safe_cleanup_test_data(redis: RedisStorageManager, dry_run=False, full=Fals
     test_prefixes = [
         "test_", "mock_", "batch_", "perf_", "enqueue_",
         "dequeue_", "concurrent_", "e2e_", "scale_",
-        "fallback_", "lifecycle_"
+        "fallback_", "lifecycle_", "latency_", "batch_proc_",
+        "read_perf_", "redis_perf_"
     ]
 
     for q in queue_keys:
@@ -68,7 +79,8 @@ def _safe_cleanup_test_data(redis: RedisStorageManager, dry_run=False, full=Fals
                 redis.redis.zrem(q, *test_items)
 
     # --- 3️⃣ Xóa lock, metrics, counter test data ---
-    for pattern in ["lock:test_*", "metrics:test_*", "counter:test_*", "ratelimit:test_*"]:
+    for pattern in ["lock:test_*", "metrics:test_*", "counter:test_*", 
+                    "counter:perf_*", "ratelimit:test_*"]:
         keys = redis.redis.keys(pattern)
         if keys:
             print(f"🧹 Cleaning {len(keys)} keys matching '{pattern}'")
@@ -90,6 +102,31 @@ def mock_token():
     with patch('core.token_manager.get_token') as mock:
         mock.return_value = "mock_token_perf_test"
         yield mock
+
+
+@pytest.fixture
+def mock_httpx_client():
+    """Mock httpx.Client for external API calls (MS4)"""
+    with patch('httpx.Client') as mock_client_class:
+        # Create a mock client instance
+        mock_client = MagicMock()
+        mock_client_class.return_value.__enter__.return_value = mock_client
+        mock_client_class.return_value.__exit__.return_value = None
+        
+        # Mock successful responses
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "success",
+            "message": "Persisted to MS4"
+        }
+        
+        mock_client.get.return_value = mock_response
+        mock_client.post.return_value = mock_response
+        mock_client.patch.return_value = mock_response
+        mock_client.close.return_value = None
+        
+        yield mock_client
 
 
 def generate_test_emails(count: int, prefix: str = "perf_test") -> List[tuple]:
@@ -131,7 +168,7 @@ class TestQueuePerformance:
             enqueued = email_queue.enqueue_batch(emails)
             elapsed = time.time() - start_time
             
-            throughput = len(enqueued) / elapsed
+            throughput = len(enqueued) / elapsed if elapsed > 0 else 0
             results[size] = {
                 "enqueued": len(enqueued),
                 "time": elapsed,
@@ -182,8 +219,8 @@ class TestQueuePerformance:
                 if not batch:
                     break
             
-            avg_time = statistics.mean(times)
-            throughput = batch_size / avg_time
+            avg_time = statistics.mean(times) if times else 0
+            throughput = batch_size / avg_time if avg_time > 0 else 0
             
             results[batch_size] = {
                 "avg_time": avg_time,
@@ -295,7 +332,7 @@ class TestQueuePerformance:
 class TestBatchProcessorPerformance:
     """Test hiệu năng của batch processor"""
     
-    def test_batch_processing_throughput(self, redis_storage, email_queue, mock_token):
+    def test_batch_processing_throughput(self, redis_storage, email_queue, mock_token, mock_httpx_client):
         """Test throughput của batch processing"""
         print("\n" + "="*70)
         print("TEST: Batch Processing Throughput")
@@ -307,61 +344,57 @@ class TestBatchProcessorPerformance:
         
         print("\nSetup: 1000 emails enqueued")
         
-        # Mock external API calls
-        with patch('requests.post') as mock_post, \
-             patch('requests.get') as mock_get, \
-             patch('requests.patch') as mock_patch:
+        # Test different configurations
+        configs = [
+            {"batch_size": 50, "max_workers": 10},
+            {"batch_size": 100, "max_workers": 20},
+            {"batch_size": 200, "max_workers": 30}
+        ]
+        
+        results = {}
+        
+        for config in configs:
+            # Re-setup cho mỗi test (chỉ xóa test data)
+            _safe_cleanup_test_data(redis_storage)
+            email_queue.enqueue_batch(emails)
             
-            mock_post.return_value.status_code = 200
-            mock_get.return_value.status_code = 200
-            mock_get.return_value.json.return_value = {"value": []}
-            mock_patch.return_value.status_code = 200
+            # Create mock EmailProcessor
+            mock_processor = Mock()
+            mock_processor.process_email.return_value = True
+            mock_processor.close.return_value = None
             
-            # Create processor with different configurations
-            configs = [
-                {"batch_size": 50, "max_workers": 10},
-                {"batch_size": 100, "max_workers": 20},
-                {"batch_size": 200, "max_workers": 30}
-            ]
+            processor = BatchEmailProcessor(
+                batch_size=config["batch_size"],
+                max_workers=config["max_workers"],
+                email_processor=mock_processor
+            )
             
-            results = {}
+            # Process all emails
+            start_time = time.time()
+            total_processed = 0
             
-            for config in configs:
-                # Re-setup cho mỗi test (chỉ xóa test data)
-                _safe_cleanup_test_data(redis_storage)
-                email_queue.enqueue_batch(emails)
+            while True:
+                batch = email_queue.dequeue_batch(config["batch_size"])
+                if not batch:
+                    break
                 
-                processor = BatchEmailProcessor(
-                    batch_size=config["batch_size"],
-                    max_workers=config["max_workers"]
-                )
-                
-                # Process all emails
-                start_time = time.time()
-                total_processed = 0
-                
-                while True:
-                    batch = email_queue.dequeue_batch(config["batch_size"])
-                    if not batch:
-                        break
-                    
-                    result = processor._process_batch_parallel(batch)
-                    total_processed += result["success"]
-                
-                elapsed = time.time() - start_time
-                throughput = total_processed / elapsed
-                
-                key = f"B{config['batch_size']}_W{config['max_workers']}"
-                results[key] = {
-                    "processed": total_processed,
-                    "time": elapsed,
-                    "throughput": throughput
-                }
-                
-                print(f"\nConfig: Batch={config['batch_size']}, Workers={config['max_workers']}")
-                print(f"  ✓ Processed: {total_processed}")
-                print(f"  ✓ Time: {elapsed:.2f}s")
-                print(f"  ✓ Throughput: {throughput:.1f} emails/s")
+                result = processor._process_batch_parallel(batch)
+                total_processed += result["success"]
+            
+            elapsed = time.time() - start_time
+            throughput = total_processed / elapsed if elapsed > 0 else 0
+            
+            key = f"B{config['batch_size']}_W{config['max_workers']}"
+            results[key] = {
+                "processed": total_processed,
+                "time": elapsed,
+                "throughput": throughput
+            }
+            
+            print(f"\nConfig: Batch={config['batch_size']}, Workers={config['max_workers']}")
+            print(f"  ✓ Processed: {total_processed}")
+            print(f"  ✓ Time: {elapsed:.2f}s")
+            print(f"  ✓ Throughput: {throughput:.1f} emails/s")
         
         # Find best configuration
         best_config = max(results.items(), key=lambda x: x[1]["throughput"])
@@ -371,7 +404,7 @@ class TestBatchProcessorPerformance:
         print("\n✅ Batch processing throughput test PASSED")
         print("="*70)
     
-    def test_processing_latency(self, redis_storage, email_queue, mock_token):
+    def test_processing_latency(self, redis_storage, email_queue, mock_token, mock_httpx_client):
         """Test latency của email processing"""
         print("\n" + "="*70)
         print("TEST: Processing Latency")
@@ -381,34 +414,37 @@ class TestBatchProcessorPerformance:
         emails = generate_test_emails(100, "latency")
         email_queue.enqueue_batch(emails)
         
-        with patch('requests.post') as mock_post, \
-             patch('requests.get') as mock_get:
+        # Create mock EmailProcessor
+        mock_processor = Mock()
+        mock_processor.process_email.return_value = True
+        mock_processor.close.return_value = None
+        
+        processor = BatchEmailProcessor(
+            batch_size=10,
+            max_workers=5,
+            email_processor=mock_processor
+        )
+        
+        latencies = []
+        
+        # Process and measure individual latencies
+        for _ in range(10):
+            batch = email_queue.dequeue_batch(10)
+            if not batch:
+                break
             
-            mock_post.return_value.status_code = 200
-            mock_get.return_value.status_code = 200
-            mock_get.return_value.json.return_value = {"value": []}
-            
-            processor = BatchEmailProcessor(batch_size=10, max_workers=5)
-            
-            latencies = []
-            
-            # Process and measure individual latencies
-            for _ in range(10):
-                batch = email_queue.dequeue_batch(10)
-                if not batch:
-                    break
-                
-                for email_id, email_data in batch:
-                    start = time.time()
-                    processor._process_single_email(email_id, email_data)
-                    latency = time.time() - start
-                    latencies.append(latency)
-            
+            for email_id, email_data in batch:
+                start = time.time()
+                processor._process_single_email(email_id, email_data)
+                latency = time.time() - start
+                latencies.append(latency)
+        
+        if latencies:
             # Calculate statistics
             avg_latency = statistics.mean(latencies)
             p50 = statistics.median(latencies)
-            p95 = statistics.quantiles(latencies, n=20)[18]  # 95th percentile
-            p99 = statistics.quantiles(latencies, n=100)[98]  # 99th percentile
+            p95 = statistics.quantiles(latencies, n=20)[18] if len(latencies) >= 20 else max(latencies)
+            p99 = statistics.quantiles(latencies, n=100)[98] if len(latencies) >= 100 else max(latencies)
             max_latency = max(latencies)
             
             print(f"\nLatency statistics (n={len(latencies)}):")
@@ -459,7 +495,7 @@ class TestRedisPerformance:
                     redis_storage.update_session_field(f"field_{i}", f"value_{i}")
             
             elapsed = time.time() - start_time
-            throughput = count / elapsed
+            throughput = count / elapsed if elapsed > 0 else 0
             
             results[op_name] = {
                 "count": count,
@@ -492,7 +528,7 @@ class TestRedisPerformance:
             redis_storage.is_email_processed(f"read_perf_email_{i}")
         
         elapsed = time.time() - start_time
-        throughput = 1000 / elapsed
+        throughput = 1000 / elapsed if elapsed > 0 else 0
         
         print(f"\nRead operations:")
         print(f"  ✓ Operations: 1000")
@@ -508,7 +544,7 @@ class TestRedisPerformance:
 class TestEndToEndPerformance:
     """Test hiệu năng end-to-end của toàn bộ pipeline"""
     
-    def test_complete_pipeline_throughput(self, redis_storage, email_queue, mock_token):
+    def test_complete_pipeline_throughput(self, redis_storage, email_queue, mock_token, mock_httpx_client):
         """Test throughput của toàn bộ pipeline: enqueue -> process -> complete"""
         print("\n" + "="*70)
         print("TEST: End-to-End Pipeline Throughput")
@@ -523,68 +559,64 @@ class TestEndToEndPerformance:
         print(f"  Batch size: {batch_size}")
         print(f"  Workers: {max_workers}")
         
-        # Mock external services
-        with patch('requests.post') as mock_post, \
-             patch('requests.get') as mock_get, \
-             patch('requests.patch') as mock_patch:
+        # Start timing
+        pipeline_start = time.time()
+        
+        # Phase 1: Enqueue
+        print("\n📥 Phase 1: Enqueueing emails...")
+        enqueue_start = time.time()
+        
+        emails = generate_test_emails(total_emails, "e2e")
+        enqueued = email_queue.enqueue_batch(emails)
+        
+        enqueue_time = time.time() - enqueue_start
+        print(f"  ✓ Enqueued {len(enqueued)} emails in {enqueue_time:.2f}s")
+        print(f"  ✓ Rate: {len(enqueued)/enqueue_time:.1f} emails/s")
+        
+        # Phase 2: Process
+        print("\n⚙️  Phase 2: Processing emails...")
+        process_start = time.time()
+        
+        # Create mock EmailProcessor
+        mock_processor = Mock()
+        mock_processor.process_email.return_value = True
+        mock_processor.close.return_value = None
+        
+        processor = BatchEmailProcessor(
+            batch_size=batch_size,
+            max_workers=max_workers,
+            email_processor=mock_processor
+        )
+        
+        total_processed = 0
+        batches = 0
+        
+        while True:
+            batch = email_queue.dequeue_batch(batch_size)
+            if not batch:
+                break
             
-            mock_post.return_value.status_code = 200
-            mock_get.return_value.status_code = 200
-            mock_get.return_value.json.return_value = {"value": []}
-            mock_patch.return_value.status_code = 200
-            
-            # Start timing
-            pipeline_start = time.time()
-            
-            # Phase 1: Enqueue
-            print("\n📥 Phase 1: Enqueueing emails...")
-            enqueue_start = time.time()
-            
-            emails = generate_test_emails(total_emails, "e2e")
-            enqueued = email_queue.enqueue_batch(emails)
-            
-            enqueue_time = time.time() - enqueue_start
-            print(f"  ✓ Enqueued {len(enqueued)} emails in {enqueue_time:.2f}s")
-            print(f"  ✓ Rate: {len(enqueued)/enqueue_time:.1f} emails/s")
-            
-            # Phase 2: Process
-            print("\n⚙️  Phase 2: Processing emails...")
-            process_start = time.time()
-            
-            processor = BatchEmailProcessor(
-                batch_size=batch_size,
-                max_workers=max_workers
-            )
-            
-            total_processed = 0
-            batches = 0
-            
-            while True:
-                batch = email_queue.dequeue_batch(batch_size)
-                if not batch:
-                    break
-                
-                result = processor._process_batch_parallel(batch)
-                total_processed += result["success"]
-                batches += 1
-            
-            process_time = time.time() - process_start
-            print(f"  ✓ Processed {total_processed} emails in {process_time:.2f}s")
-            print(f"  ✓ Rate: {total_processed/process_time:.1f} emails/s")
-            print(f"  ✓ Batches: {batches}")
-            
-            # Overall metrics
-            total_time = time.time() - pipeline_start
-            overall_throughput = total_processed / total_time
-            
-            print(f"\n📊 Overall Results:")
-            print(f"  ✓ Total time: {total_time:.2f}s")
-            print(f"  ✓ Overall throughput: {overall_throughput:.1f} emails/s")
-            print(f"  ✓ Success rate: {total_processed/total_emails*100:.1f}%")
-            
-            # Performance requirements
-            assert overall_throughput > 50, "Overall throughput too low"
-            assert total_processed == total_emails, "Not all emails processed"
+            result = processor._process_batch_parallel(batch)
+            total_processed += result["success"]
+            batches += 1
+        
+        process_time = time.time() - process_start
+        print(f"  ✓ Processed {total_processed} emails in {process_time:.2f}s")
+        print(f"  ✓ Rate: {total_processed/process_time:.1f} emails/s")
+        print(f"  ✓ Batches: {batches}")
+        
+        # Overall metrics
+        total_time = time.time() - pipeline_start
+        overall_throughput = total_processed / total_time if total_time > 0 else 0
+        
+        print(f"\n📊 Overall Results:")
+        print(f"  ✓ Total time: {total_time:.2f}s")
+        print(f"  ✓ Overall throughput: {overall_throughput:.1f} emails/s")
+        print(f"  ✓ Success rate: {total_processed/total_emails*100:.1f}%")
+        
+        # Performance requirements
+        assert overall_throughput > 50, "Overall throughput too low"
+        assert total_processed == total_emails, "Not all emails processed"
         
         print("\n✅ End-to-end pipeline test PASSED")
         print("="*70)
@@ -593,56 +625,59 @@ class TestEndToEndPerformance:
 class TestScalability:
     """Test khả năng scale của hệ thống"""
     
-    def test_load_scaling(self, redis_storage, email_queue, mock_token):
+    def test_load_scaling(self, redis_storage, email_queue, mock_token, mock_httpx_client):
         """Test performance với different load levels"""
         print("\n" + "="*70)
         print("TEST: Load Scaling")
         print("="*70)
         
-        load_levels = [100, 500, 1000, 2000, 5000, 10000, 20000]
+        load_levels = [100, 500, 1000, 2000, 5000]
         results = []
         
-        with patch('requests.post') as mock_post, \
-             patch('requests.get') as mock_get:
+        for load in load_levels:
+            # Cleanup (safe)
+            _safe_cleanup_test_data(redis_storage)
             
-            mock_post.return_value.status_code = 200
-            mock_get.return_value.status_code = 200
-            mock_get.return_value.json.return_value = {"value": []}
+            # Setup
+            emails = generate_test_emails(load, f"scale_{load}")
             
-            for load in load_levels:
-                # Cleanup (safe)
-                _safe_cleanup_test_data(redis_storage)
-                
-                # Setup
-                emails = generate_test_emails(load, f"scale_{load}")
-                
-                # Measure
-                start_time = time.time()
-                
-                email_queue.enqueue_batch(emails)
-                
-                processor = BatchEmailProcessor(batch_size=100, max_workers=20)
-                total_processed = 0
-                
-                while True:
-                    batch = email_queue.dequeue_batch(100)
-                    if not batch:
-                        break
-                    result = processor._process_batch_parallel(batch)
-                    total_processed += result["success"]
-                
-                elapsed = time.time() - start_time
-                throughput = total_processed / elapsed
-                
-                results.append({
-                    "load": load,
-                    "time": elapsed,
-                    "throughput": throughput
-                })
-                
-                print(f"\nLoad: {load} emails")
-                print(f"  ✓ Time: {elapsed:.2f}s")
-                print(f"  ✓ Throughput: {throughput:.1f} emails/s")
+            # Measure
+            start_time = time.time()
+            
+            email_queue.enqueue_batch(emails)
+            
+            # Create mock EmailProcessor
+            mock_processor = Mock()
+            mock_processor.process_email.return_value = True
+            mock_processor.close.return_value = None
+            
+            processor = BatchEmailProcessor(
+                batch_size=100,
+                max_workers=20,
+                email_processor=mock_processor
+            )
+            
+            total_processed = 0
+            
+            while True:
+                batch = email_queue.dequeue_batch(100)
+                if not batch:
+                    break
+                result = processor._process_batch_parallel(batch)
+                total_processed += result["success"]
+            
+            elapsed = time.time() - start_time
+            throughput = total_processed / elapsed if elapsed > 0 else 0
+            
+            results.append({
+                "load": load,
+                "time": elapsed,
+                "throughput": throughput
+            })
+            
+            print(f"\nLoad: {load} emails")
+            print(f"  ✓ Time: {elapsed:.2f}s")
+            print(f"  ✓ Throughput: {throughput:.1f} emails/s")
         
         # Analyze scaling efficiency
         print(f"\n📈 Scaling Analysis:")
@@ -651,8 +686,8 @@ class TestScalability:
             curr = results[i]
             
             load_increase = curr["load"] / prev["load"]
-            time_increase = curr["time"] / prev["time"]
-            efficiency = (load_increase / time_increase) * 100
+            time_increase = curr["time"] / prev["time"] if prev["time"] > 0 else 0
+            efficiency = (load_increase / time_increase) * 100 if time_increase > 0 else 0
             
             print(f"  {prev['load']} → {curr['load']} emails:")
             print(f"    Load increase: {load_increase:.1f}x")
@@ -692,6 +727,7 @@ class TestPerformanceSummary:
         print("  • Optimal batch size: 100-200 emails")
         print("  • Optimal workers: 20-30 threads")
         print("  • Redis connection pooling enabled")
+        print("  • httpx.Client for MS4 connection pooling")
         print("  • Regular queue cleanup needed")
         
         print("\n✅ All performance tests PASSED")

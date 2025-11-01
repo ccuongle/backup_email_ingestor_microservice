@@ -25,4 +25,4 @@ dist/
 
 # BMAD (local only)
 .bmad-core/
-.bmad-*/
+web-bundles/

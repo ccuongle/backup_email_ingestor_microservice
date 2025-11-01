@@ -4,7 +4,7 @@ Xử lý email theo cơ chế webhook với ngrok tunnel riêng biệt
 """
 import asyncio
 import json
-import requests
+import httpx
 import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict
@@ -165,11 +165,12 @@ class WebhookService:
         url = f"{self.GRAPH_URL}/me/messages/{message_id}"
         
         try:
-            resp = requests.get(url, headers=headers, timeout=10)
+            with httpx.Client() as client:
+                resp = client.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return None
-        except Exception as e:
+        except httpx.RequestError as e:
             print(f"[WebhookService] Fetch email error: {e}")
             return None
     
@@ -185,9 +186,10 @@ class WebhookService:
 
         def do_patch():
             try:
-                requests.patch(url, headers=headers, json=body, timeout=10)
+                with httpx.Client() as client:
+                    client.patch(url, headers=headers, json=body, timeout=10)
                 print(f"[WebhookService] ✓ Marked {message_id} as read.")
-            except requests.exceptions.RequestException as e:
+            except httpx.RequestError as e:
                 print(f"[WebhookService] ERROR: Failed to mark {message_id} as read: {e}")
         
         # Run in a separate thread to not block the webhook response
@@ -259,12 +261,13 @@ class WebhookService:
         }
         
         try:
-            resp = requests.post(
-                f"{self.GRAPH_URL}/subscriptions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
+            with httpx.Client() as client:
+                resp = client.post(
+                    f"{self.GRAPH_URL}/subscriptions",
+                    headers=headers,
+                    json=payload,
+                    timeout=30
+                )
             
             if resp.status_code == 201:
                 data = resp.json()
@@ -278,7 +281,7 @@ class WebhookService:
             print(f"[WebhookService] Subscription creation failed: {resp.text}")
             return None
         
-        except Exception as e:
+        except httpx.RequestError as e:
             print(f"[WebhookService] Subscription error: {e}")
             return None
     
@@ -291,13 +294,14 @@ class WebhookService:
         headers = {"Authorization": f"Bearer {token}"}
         
         try:
-            requests.delete(
-                f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
-                headers=headers,
-                timeout=10
-            )
+            with httpx.Client() as client:
+                client.delete(
+                    f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
+                    headers=headers,
+                    timeout=10
+                )
             print(f"[WebhookService] Subscription deleted")
-        except Exception as e:
+        except httpx.RequestError as e:
             print(f"[WebhookService] Delete subscription error: {e}")
     
     def _renew_subscription(self) -> bool:
@@ -315,19 +319,20 @@ class WebhookService:
         payload = {"expirationDateTime": new_exp}
         
         try:
-            resp = requests.patch(
-                f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
-                headers=headers,
-                json=payload,
-                timeout=10
-            )
+            with httpx.Client() as client:
+                resp = client.patch(
+                    f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
+                    headers=headers,
+                    json=payload,
+                    timeout=10
+                )
             
             if resp.status_code == 200:
                 print(f"[WebhookService] Subscription renewed until {new_exp}")
                 return True
             
             return False
-        except Exception as e:
+        except httpx.RequestError as e:
             print(f"[WebhookService] Renew error: {e}")
             return False
     
@@ -345,11 +350,12 @@ class WebhookService:
                     token = get_token()
                     headers = {"Authorization": f"Bearer {token}"}
                     
-                    resp = requests.get(
-                        f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
-                        headers=headers,
-                        timeout=10
-                    )
+                    with httpx.Client() as client:
+                        resp = client.get(
+                            f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
+                            headers=headers,
+                            timeout=10
+                        )
                     
                     if resp.status_code != 200:
                         print(f"[WebhookService] Subscription not found, recreating...")

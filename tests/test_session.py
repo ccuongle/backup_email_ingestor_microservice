@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from unittest.mock import Mock, patch, MagicMock
 from typing import List, Dict
+import httpx
 
 # Import components to test
 from core.polling_service import PollingService, TriggerMode
@@ -95,53 +96,53 @@ def session_manager_instance(redis_storage):
 @pytest.fixture
 def mock_graph_api():
     """Mock Microsoft Graph API responses"""
-    with patch('requests.get') as mock_get, \
-         patch('requests.post') as mock_post, \
-         patch('requests.patch') as mock_patch:
-        
-        # Mock email fetch response
-        mock_get.return_value.status_code = 200
-        mock_get.return_value.json.return_value = {
-            "value": [
-                {
-                    "id": "test_email_1",
-                    "subject": "Test Email 1",
-                    "from": {"emailAddress": {"address": "sender1@test.com"}},
-                    "receivedDateTime": datetime.now(timezone.utc).isoformat(),
-                    "isRead": False,
-                    "hasAttachments": False,
-                    "bodyPreview": "Test body preview 1"
-                },
-                {
-                    "id": "test_email_2",
-                    "subject": "Test Email 2",
-                    "from": {"emailAddress": {"address": "sender2@test.com"}},
-                    "receivedDateTime": datetime.now(timezone.utc).isoformat(),
-                    "isRead": False,
-                    "hasAttachments": True,
-                    "bodyPreview": "Test body preview 2"
-                }
-            ],
-            "@odata.nextLink": None
-        }
-        
-        # Mock mark as read
-        mock_patch.return_value.status_code = 200
-        
-        # Mock batch mark as read
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = {
-            "responses": [
-                {"id": "1", "status": 200},
-                {"id": "2", "status": 200}
-            ]
-        }
-        
-        yield {
-            "get": mock_get,
-            "post": mock_post,
-            "patch": mock_patch
-        }
+    with patch('httpx.Client') as mock_httpx_client:
+            mock_client_instance = MagicMock()
+            mock_httpx_client.return_value.__enter__.return_value = mock_client_instance
+            
+            # Mock email fetch response
+            mock_client_instance.get.return_value.status_code = 200
+            mock_client_instance.get.return_value.json.return_value = {
+                "value": [
+                    {
+                        "id": "test_email_1",
+                        "subject": "Test Email 1",
+                        "from": {"emailAddress": {"address": "sender1@test.com"}},
+                        "receivedDateTime": datetime.now(timezone.utc).isoformat(),
+                        "isRead": False,
+                        "hasAttachments": False,
+                        "bodyPreview": "Test body preview 1"
+                    },
+                    {
+                        "id": "test_email_2",
+                        "subject": "Test Email 2",
+                        "from": {"emailAddress": {"address": "sender2@test.com"}},
+                        "receivedDateTime": datetime.now(timezone.utc).isoformat(),
+                        "isRead": False,
+                        "hasAttachments": True,
+                        "bodyPreview": "Test body preview 2"
+                    }
+                ],
+                "@odata.nextLink": None
+            }
+            
+            # Mock mark as read
+            mock_client_instance.patch.return_value.status_code = 200
+            
+            # Mock batch mark as read
+            mock_client_instance.post.return_value.status_code = 200
+            mock_client_instance.post.return_value.json.return_value = {
+                "responses": [
+                    {"id": "1", "status": 200},
+                    {"id": "2", "status": 200}
+                ]
+            }
+            
+            yield {
+                "get": mock_client_instance.get,
+                "post": mock_client_instance.post,
+                "patch": mock_client_instance.patch
+            }
 
 
 @pytest.fixture
@@ -203,7 +204,7 @@ class TestPollingOnce:
     def test_polling_once_no_emails(self, redis_storage, email_queue, mock_token):
         """Test polling khi không có email mới"""
         # Setup - mock empty response
-        with patch('requests.get') as mock_get:
+        with patch('httpx.get') as mock_get:
             mock_get.return_value.status_code = 200
             mock_get.return_value.json.return_value = {
                 "value": [],
@@ -224,9 +225,10 @@ class TestPollingOnce:
     
     def test_polling_once_api_error(self, redis_storage, email_queue, mock_token):
         """Test polling xử lý lỗi API"""
-        # Setup - mock API error
-        with patch('requests.get') as mock_get:
-            mock_get.side_effect = Exception("API Connection Error")
+        with patch('httpx.Client') as mock_httpx_client:
+            mock_client_instance = MagicMock()
+            mock_httpx_client.return_value.__enter__.return_value = mock_client_instance
+            mock_client_instance.get.side_effect = httpx.RequestError("API Connection Error", request=MagicMock())
             
             polling_service = PollingService()
             
@@ -389,9 +391,11 @@ class TestFallbackNoWebhook:
         print("✅ Step 2: Fallback activated, now in BOTH_ACTIVE mode")
         
         # Step 3: Verify polling can now work
-        with patch('requests.get') as mock_get:
-            mock_get.return_value.status_code = 200
-            mock_get.return_value.json.return_value = {
+        with patch('httpx.Client') as mock_httpx_client:
+            mock_client_instance = MagicMock()
+            mock_httpx_client.return_value.__enter__.return_value = mock_client_instance
+            mock_client_instance.get.return_value.status_code = 200
+            mock_client_instance.get.return_value.json.return_value = {
                 "value": [
                     {
                         "id": "fallback_email_1",
@@ -406,7 +410,7 @@ class TestFallbackNoWebhook:
             }
             
             # Mock batch mark as read
-            with patch('requests.post') as mock_post:
+            with patch.object(mock_client_instance, 'post') as mock_post:
                 mock_post.return_value.status_code = 200
                 
                 polling_service = PollingService()
@@ -477,7 +481,7 @@ class TestBatchProcessing:
         print("✅ Setup: 2 emails enqueued")
         
         # Mock MS2 and MS4 endpoints
-        with patch('requests.post') as mock_post:
+        with patch('httpx.post') as mock_post:
             mock_post.return_value.status_code = 200
             
             # Create processor
