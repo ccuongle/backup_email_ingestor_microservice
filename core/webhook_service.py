@@ -14,12 +14,19 @@ import time
 from core.session_manager import session_manager, SessionState
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
+from concurrent_storage.redis_manager import get_redis_storage
+from utils.config import (
+    GRAPH_API_RATE_LIMIT_THRESHOLD,
+    GRAPH_API_RATE_LIMIT_WINDOW_SECONDS,
+    GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS
+)
 
 class WebhookService:
     """Dịch vụ webhook cho email notifications"""
     
     GRAPH_URL = "https://graph.microsoft.com/v1.0"
     WEBHOOK_PORT = 8100  # Port riêng cho webhook
+    RATE_LIMIT_KEY = "graph_api_webhook"
     
     def __init__(self):
         self.active = False
@@ -31,6 +38,37 @@ class WebhookService:
         self.max_errors = 5
         self.app = None
         self.server_process = None
+        self.redis = get_redis_storage()
+        self._stop_event = threading.Event()
+
+    def _check_and_wait_for_rate_limit(self) -> bool:
+        """
+        Check rate limit before making Graph API call.
+        If limit exceeded, pause execution for configured duration.
+        
+        Returns:
+            True if request is allowed, False if service should stop
+        """
+        allowed, current_count = self.redis.check_rate_limit(
+            key=self.RATE_LIMIT_KEY,
+            limit=GRAPH_API_RATE_LIMIT_THRESHOLD,
+            window=GRAPH_API_RATE_LIMIT_WINDOW_SECONDS
+        )
+        
+        if not allowed:
+            print(f"[WebhookService] Rate limit exceeded ({current_count}/{GRAPH_API_RATE_LIMIT_THRESHOLD})")
+            print(f"[WebhookService] Pausing for {GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS}s before retry...")
+            
+            # Wait with ability to check stop event
+            if self._stop_event.wait(timeout=GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS):
+                # Stop event was set during wait
+                return False
+            
+            # After wait, check rate limit again
+            return self._check_and_wait_for_rate_limit()
+        
+        return True
+
     
     def start(self) -> bool:
         """Khởi động webhook service"""
@@ -164,6 +202,8 @@ class WebhookService:
         headers = {"Authorization": f"Bearer {token}"}
         url = f"{self.GRAPH_URL}/me/messages/{message_id}"
         
+        if not self._check_and_wait_for_rate_limit():
+            return None
         try:
             with httpx.Client() as client:
                 resp = client.get(url, headers=headers, timeout=10)
@@ -186,6 +226,8 @@ class WebhookService:
 
         def do_patch():
             try:
+                if not self._check_and_wait_for_rate_limit():
+                    return
                 with httpx.Client() as client:
                     client.patch(url, headers=headers, json=body, timeout=10)
                 print(f"[WebhookService] ✓ Marked {message_id} as read.")
@@ -258,9 +300,11 @@ class WebhookService:
             "resource": "me/mailfolders('inbox')/messages",
             "expirationDateTime": exp,
             "clientState": "webhook_secret_state"
-        }
-        
+            }
+
         try:
+            if not self._check_and_wait_for_rate_limit():
+                return None
             with httpx.Client() as client:
                 resp = client.post(
                     f"{self.GRAPH_URL}/subscriptions",
@@ -294,6 +338,8 @@ class WebhookService:
         headers = {"Authorization": f"Bearer {token}"}
         
         try:
+            if not self._check_and_wait_for_rate_limit():
+                return
             with httpx.Client() as client:
                 client.delete(
                     f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
@@ -317,8 +363,9 @@ class WebhookService:
         
         new_exp = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
         payload = {"expirationDateTime": new_exp}
-        
         try:
+            if not self._check_and_wait_for_rate_limit():
+                return False
             with httpx.Client() as client:
                 resp = client.patch(
                     f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
@@ -347,6 +394,8 @@ class WebhookService:
                     time.sleep(check_interval)
                     
                     # Get subscription status
+                    if not self._check_and_wait_for_rate_limit():
+                        continue
                     token = get_token()
                     headers = {"Authorization": f"Bearer {token}"}
                     

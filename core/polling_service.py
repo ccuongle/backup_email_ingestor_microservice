@@ -224,6 +224,8 @@ class PollingService:
         }
 
         while url and page_count < max_pages:
+            if not self._check_and_wait_for_rate_limit():
+                break
             try:
                 with httpx.Client() as client:
                     resp = client.get(url, headers=headers, params=params, timeout=30)
@@ -283,6 +285,8 @@ class PollingService:
         }
 
         try:
+            if not self._check_and_wait_for_rate_limit():
+                return
             with httpx.Client() as client:
                 response = client.post(
                     f"{self.GRAPH_URL}/$batch",
