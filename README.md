@@ -4,9 +4,13 @@
 
 `ms1_email_ingestor` is a critical microservice responsible for ingesting invoice-related emails from Microsoft Outlook. It uses a queue-centric architecture with Redis to manage high-volume email ingestion from two sources: a periodic polling service and a real-time webhook. Emails are processed in parallel batches, with invoice metadata being forwarded to the MS4 Persistence service.
 
-This service is designed for high-throughput and resilience, with features for rate-limiting, exponential backoff, and robust error handling.
+This service has been enhanced for high-throughput and resilience, incorporating standardized `httpx` for all HTTP communications, batch processing for MS4 integration, proactive rate limiting, and robust error handling with exponential backoff.
 
-## 2. Prerequisites
+## 2. Documentation
+
+For a comprehensive understanding of the system's architecture, design patterns, technical stack, and detailed component descriptions, please refer to the [Brownfield Architecture Document](docs/brownfield-architecture.md).
+
+## 3. Prerequisites
 
 *   **Python 3.10+**
 *   **Redis**: A running Redis instance.
