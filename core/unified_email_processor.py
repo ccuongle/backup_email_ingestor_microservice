@@ -26,49 +26,44 @@ class EmailProcessor:
         self.client = httpx.Client(headers=self.headers, timeout=10)
         os.makedirs(ATTACH_DIR, exist_ok=True)
     
-    def process_email(self, message: Dict, source: str = "unknown") -> bool:
-        """Xử lý một email"""
+    def process_email(self, message: Dict, source: str = "unknown") -> Optional[Dict]:
+        """Xử lý một email và trả về metadata nếu thành công."""
         msg_id = message.get("id")
         if not msg_id:
             print(f"[EmailProcessor] Missing message ID")
-            return False
-        
-        # Kiểm tra duplicate
+            return None
+
         if session_manager.is_email_processed(msg_id):
             print(f"[EmailProcessor] [{source}] Email {msg_id} already processed")
-            return False
-        
+            return None
+
         subject = message.get("subject", "")
         sender = message.get("from", {}).get("emailAddress", {}).get("address", "")
-        received_at = message.get("receivedDateTime", "")
         
         print(f"[EmailProcessor] [{source}] Processing: {msg_id}")
         print(f"  Subject: {subject}")
         print(f"  From: {sender}")
-        
+
         try:
-            # Step 1: Lọc spam
             if self._is_spam(sender):
                 print(f"[EmailProcessor] SPAM detected, moving to junk")
                 self._move_to_junk(msg_id)
                 session_manager.register_processed_email(msg_id)
-                return True
-            
-            # Step 2: Lưu attachments
+                return None  # Spam emails don't produce metadata
+
             self._save_attachments(msg_id)
             
-            # Step 3: Gửi metadata đến MS4 (Persistence)
-            self._forward_to_persistence(message)
+            # This now returns the metadata payload
+            metadata = self._prepare_persistence_payload(message)
             
-            # Đăng ký đã xử lý
             session_manager.register_processed_email(msg_id)
             
             print(f"[EmailProcessor] [{source}] Successfully processed: {msg_id}")
-            return True
-        
+            return metadata
+
         except Exception as e:
             print(f"[EmailProcessor] [{source}] Error processing {msg_id}: {e}")
-            return False
+            return None
     
     def batch_process_emails(self, messages: List[Dict], source: str = "polling") -> Dict:
         """Xử lý batch emails"""
@@ -137,31 +132,17 @@ class EmailProcessor:
     
 
     
-    def _forward_to_persistence(self, message: Dict):
-        """Gửi metadata đến MS4 Persistence"""
-        try:
-            metadata = {
-                "id": message.get("id"),
-                "subject": message.get("subject"),
-                "hasAttachments": message.get("hasAttachments", False),
-                "sender": message.get("from", {}).get("emailAddress", {}).get("address", ""),
-                "receivedDateTime": message.get("receivedDateTime"),
-                "raw_message": json.dumps(message)
-            }
-            
-            print(f"[EmailProcessor] Sending metadata to MS4: {metadata}")
-            
-            response = self.client.post(
-                f"{MS4_PERSISTENCE_BASE_URL}/metadata",
-                json=metadata
-            )
-            
-            if response.status_code in (200, 201):
-                print(f"[EmailProcessor] Persisted to MS4 successfully")
-            else:
-                print(f"[EmailProcessor] MS4 error: {response.status_code}")
-        except httpx.RequestError as e:
-            print(f"[EmailProcessor] Failed to connect to MS4: {e}")
+    def _prepare_persistence_payload(self, message: Dict) -> Dict:
+        """Chuẩn bị metadata để gửi đến MS4 Persistence."""
+        metadata = {
+            "id": message.get("id"),
+            "subject": message.get("subject"),
+            "hasAttachments": message.get("hasAttachments", False),
+            "sender": message.get("from", {}).get("emailAddress", {}).get("address", ""),
+            "receivedDateTime": message.get("receivedDateTime"),
+            "raw_message": json.dumps(message)
+        }
+        return metadata
     
     def close(self):
         """Closes the httpx client."""

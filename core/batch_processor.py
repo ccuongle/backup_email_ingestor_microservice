@@ -162,6 +162,7 @@ class BatchEmailProcessor:
                 print(f"[BatchProcessor] Batch completed in {batch_time:.2f}s")
                 print(f"  Success: {result['success']}")
                 print(f"  Failed: {result['failed']}")
+                print(f"  Payloads received: {len(result['payloads'])}") # Placeholder for batching
                 print(f"  Rate: {len(batch)/batch_time:.1f} emails/s")
                 
                 # Re-queue timeouts periodically
@@ -185,48 +186,44 @@ class BatchEmailProcessor:
             batch: List of (email_id, email_data)
         
         Returns:
-            {"success": int, "failed": int}
+            {"success": int, "failed": int, "payloads": List[Dict]}
         """
-        result = {"success": 0, "failed": 0}
-        if self.executor is None:
+        result = {"success": 0, "failed": 0, "payloads": []}
+        if not self.executor:
+            # Fallback initialization, should be done in start()
             self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
-        # Submit all tasks
-        futures = {}
-        for email_id, email_data in batch:
-            future = self.executor.submit(
-                self._process_single_email,
-                email_id,
-                email_data
-            )
-            futures[future] = email_id
+
+        futures = {
+            self.executor.submit(self._process_single_email, email_id, email_data): email_id
+            for email_id, email_data in batch
+        }
         
-        # Collect results
         processed_ids = []
         
         for future in as_completed(futures):
             email_id = futures[future]
             try:
-                success = future.result(timeout=30)
+                payload = future.result(timeout=30)
                 
-                if success:
+                if payload:
                     result["success"] += 1
+                    result["payloads"].append(payload)
                     processed_ids.append(email_id)
                 else:
                     result["failed"] += 1
-                    self.queue.mark_failed(email_id, "Processing failed")
+                    self.queue.mark_failed(email_id, "Processing failed or returned no payload")
             
             except Exception as e:
                 result["failed"] += 1
                 self.queue.mark_failed(email_id, str(e))
                 print(f"[BatchProcessor] Error processing {email_id}: {e}")
         
-        # Batch mark processed
         if processed_ids:
             self.queue.mark_processed(processed_ids)
         
         return result
     
-    def _process_single_email(self, email_id: str, email_data: Dict) -> bool:
+    def _process_single_email(self, email_id: str, email_data: Dict) -> Optional[Dict]:
         """
         Process single email (runs in thread pool)
         
@@ -235,23 +232,25 @@ class BatchEmailProcessor:
             email_data: Email data dict
         
         Returns:
-            True if success
+            JSON payload if successful, otherwise None
         """
         try:
             if self.processor is None:
+                # This is a fallback, should be initialized in start()
                 token = get_token()
                 self.processor = EmailProcessor(token)
-            # Use the unified processor
-            success = self.processor.process_email(
+
+            # Use the unified processor, which now returns a payload or None
+            payload = self.processor.process_email(
                 message=email_data,
                 source="batch_processor"
             )
             
-            return success
+            return payload
         
         except Exception as e:
             print(f"[BatchProcessor] Email {email_id} error: {e}")
-            return False
+            return None
     
     def get_stats(self) -> Dict:
         """Get processor statistics (with KPI metrics)"""
