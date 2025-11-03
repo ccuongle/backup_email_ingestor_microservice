@@ -1,13 +1,12 @@
 """
-Main Orchestrator - Updated
-Điều phối với Queue + Batch Processing architecture
+Main Orchestrator - Signal Handling Fix
+Sửa lỗi graceful shutdown với async/await
 """
-import time
+import asyncio
 import signal
 import sys
 from datetime import datetime, timezone
 from typing import Optional
-import asyncio
 
 from core.session_manager import session_manager, SessionConfig, SessionState, TriggerMode
 from core.polling_service import polling_service
@@ -26,10 +25,10 @@ class EmailIngestionOrchestrator:
         self.running = False
         self.current_session_id: Optional[str] = None
         self.batch_processor = None
+        self._shutdown_event = asyncio.Event()
         
-        # Setup signal handlers
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
+        # Setup signal handlers - KHÔNG dùng signal.signal trong async context
+        # Sẽ setup trong main() thay vì __init__
     
     async def start_session(
         self,
@@ -39,16 +38,7 @@ class EmailIngestionOrchestrator:
         batch_size: int = 50,
         max_workers: int = 20
     ) -> bool:
-        """
-        Khởi động phiên làm việc với batch processing
-        
-        Args:
-            polling_mode: Manual/Scheduled polling
-            polling_interval: Polling interval (seconds)
-            enable_webhook: Enable webhook notifications
-            batch_size: Number of emails per batch
-            max_workers: Number of parallel workers
-        """
+        """Khởi động phiên làm việc với batch processing"""
         if self.running:
             print("[Orchestrator] Session already running")
             return False
@@ -57,12 +47,8 @@ class EmailIngestionOrchestrator:
         current_session_state = session_manager.get_session_status()["state"]
         if current_session_state != SessionState.TERMINATED.value:
             print(f"[Orchestrator] Found active session ({current_session_state}), terminating before starting new one...")
-            session_manager.terminate_session(reason="previous_session_cleanup")
-            # Give Redis a moment to update
+            session_manager.terminate_session(reason="previous_session_cleanup")  # ✅ SYNC
             await asyncio.sleep(1)
-            # Verify termination
-            if session_manager.get_session_status()["state"] != SessionState.TERMINATED.value:
-                print("[Orchestrator] WARNING: Previous session termination failed. Proceeding anyway.")
             
         # Tạo session config
         session_id = f"session_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -95,7 +81,7 @@ class EmailIngestionOrchestrator:
             self.current_session_id = session_id
             self.running = True
             
-            # Phase 1: Start Batch Processor (CRITICAL - must start first)
+            # Phase 1: Start Batch Processor
             print("\n[Orchestrator] Phase 1: Starting Batch Processor...")
             self.batch_processor = get_batch_processor(
                 batch_size=batch_size,
@@ -119,13 +105,10 @@ class EmailIngestionOrchestrator:
             
             # Phase 3: Start Polling
             print("\n[Orchestrator] Phase 3: Performing initial poll to clear backlog...")
-            # Chỉ poll 1 lần duy nhất khi khởi động để dọn backlog
-            # Polling định kỳ chỉ được kích hoạt khi fallback
             if polling_mode == TriggerMode.SCHEDULED:
                 result = await polling_service.poll_once()
                 print(f"[Orchestrator] ✓ Initial poll complete. Found: {result.get('emails_found', 0)}, Enqueued: {result.get('enqueued', 0)}")
                 
-                # Nếu có webhook, chuyển sang chế độ webhook-only ngay lập tức
                 if enable_webhook:
                     session_manager.complete_initial_polling()
             else:
@@ -149,7 +132,7 @@ class EmailIngestionOrchestrator:
         
         except Exception as e:
             print(f"[Orchestrator] Session start error: {e}")
-            self._cleanup()
+            await self._cleanup()
             return False
     
     async def stop_session(self, reason: str = "user_requested"):
@@ -163,10 +146,10 @@ class EmailIngestionOrchestrator:
         print("=" * 70)
         
         # Stop services
-        self._cleanup()
+        await self._cleanup()
         
-        # Terminate session
-        session_manager.terminate_session(reason)
+        # Terminate session - SYNC function
+        session_manager.terminate_session(reason)  # Không cần await
         
         # Show summary
         status = self.get_status()
@@ -203,7 +186,6 @@ class EmailIngestionOrchestrator:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        # Add batch processor stats if active
         if self.batch_processor and self.batch_processor.active:
             status["batch_processor"] = self.batch_processor.get_stats()
         
@@ -217,7 +199,6 @@ class EmailIngestionOrchestrator:
         print("\n[Orchestrator] Manual poll triggered")
         result = await polling_service.poll_once()
         
-        # Show queue status after poll
         queue_stats = get_email_queue().get_stats()
         result["queue_size_after"] = queue_stats["queue_size"]
         
@@ -236,7 +217,19 @@ class EmailIngestionOrchestrator:
             monitor_interval = 10
             
             while self.running:
-                await asyncio.sleep(monitor_interval)
+                # Wait với timeout để check shutdown event
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=monitor_interval
+                    )
+                    # Shutdown event được set
+                    print("[Orchestrator] Shutdown event detected")
+                    await self.stop_session(reason="shutdown_requested")
+                    break
+                except asyncio.TimeoutError:
+                    # Timeout bình thường, tiếp tục monitoring
+                    pass
                 
                 # Get status
                 status = self.get_status()
@@ -250,9 +243,12 @@ class EmailIngestionOrchestrator:
                     print("[Orchestrator] Session terminated")
                     break
         
+        except asyncio.CancelledError:
+            print("\n[Orchestrator] Wait cancelled")
+            await self.stop_session(reason="cancelled")
         except KeyboardInterrupt:
-            print("\n[Orchestrator] Interrupted by user")
-            await self.stop_session(reason="user_interrupt")
+            print("\n[Orchestrator] Keyboard interrupt in wait loop")
+            await self.stop_session(reason="keyboard_interrupt")
     
     def _print_monitoring(self, status: dict):
         """Print monitoring information"""
@@ -274,21 +270,21 @@ class EmailIngestionOrchestrator:
         """Cleanup tất cả services"""
         print("[Orchestrator] Cleaning up services...")
         
-        # Stop polling first (stop feeding queue)
+        # Stop polling first (SYNC)
         if polling_service.active:
-            await polling_service.stop()
+            polling_service.stop()  # SYNC - không cần await
             print("[Orchestrator] ✓ Polling stopped")
         
-        # Stop webhook
+        # Stop webhook (ASYNC)
         if webhook_service.active:
             await webhook_service.stop()
             print("[Orchestrator] ✓ Webhook stopped")
         
-        # Let batch processor finish current batch
+        # Let batch processor finish (SYNC)
         if self.batch_processor and self.batch_processor.active:
             print("[Orchestrator] Waiting for batch processor to finish...")
-            time.sleep(2)  # Grace period
-            self.batch_processor.stop()
+            await asyncio.sleep(2)
+            self.batch_processor.stop()  # SYNC - không cần await
             print("[Orchestrator] ✓ Batch Processor stopped")
     
     def _calculate_success_rate(self, batch_stats: dict) -> float:
@@ -302,11 +298,11 @@ class EmailIngestionOrchestrator:
         
         return round((success / total) * 100, 1)
     
-    def _signal_handler(self, signum, frame):
-        """Handle SIGINT/SIGTERM"""
-        print(f"\n[Orchestrator] Received signal {signum}")
-        asyncio.run(self.stop_session(reason="signal_interrupt"))
-        sys.exit(0)
+    async def shutdown(self):
+        """Graceful shutdown - được gọi từ signal handler"""
+        print("\n[Orchestrator] Initiating graceful shutdown...")
+        self._shutdown_event.set()
+        # Không gọi stop_session ở đây - sẽ được gọi trong wait_for_session
 
 
 # Singleton instance
@@ -316,8 +312,33 @@ orchestrator = EmailIngestionOrchestrator()
 # ============= CLI Interface =============
 
 async def main():
-    """CLI interface với batch processing options"""
+    """CLI interface với async signal handling"""
     import argparse
+    import platform
+    
+    # Setup signal handlers cho async
+    loop = asyncio.get_running_loop()
+    
+    def signal_handler(sig):
+        """Signal handler - tạo task để shutdown"""
+        print(f"\n[Main] Received signal {sig}")
+        # Tạo task để shutdown thay vì gọi asyncio.run()
+        asyncio.create_task(orchestrator.shutdown())
+    
+    # Register signals - khác nhau giữa Windows và Unix
+    if platform.system() == 'Windows':
+        # Windows không hỗ trợ add_signal_handler, dùng signal.signal
+        def windows_signal_handler(sig, frame):
+            print(f"\n[Main] Received signal {sig}")
+            # Set shutdown event
+            loop.call_soon_threadsafe(orchestrator._shutdown_event.set)
+        
+        signal.signal(signal.SIGINT, windows_signal_handler)
+        signal.signal(signal.SIGTERM, windows_signal_handler)
+    else:
+        # Unix/Linux/MacOS
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
     
     parser = argparse.ArgumentParser(
         description="Email Ingestion Microservice with Batch Processing"
@@ -378,9 +399,9 @@ async def main():
             polling_interval=0
         )
         
-        session_manager.start_session(config)
-        result = await polling_service.poll_once()
-        session_manager.terminate_session("one_time_complete")
+        session_manager.start_session(config)  # SYNC
+        result = await polling_service.poll_once()  # ASYNC
+        session_manager.terminate_session("one_time_complete")  # SYNC
         
         print("\n" + "=" * 70)
         print("POLL RESULT:")
@@ -415,4 +436,12 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import traceback
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[Main] Keyboard interrupt received")
+    except Exception as e:
+        print(f"\n[Main] Fatal error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
