@@ -7,6 +7,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from typing import Optional
+import asyncio
 
 from core.session_manager import session_manager, SessionConfig, SessionState, TriggerMode
 from core.polling_service import polling_service
@@ -30,7 +31,7 @@ class EmailIngestionOrchestrator:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
     
-    def start_session(
+    async def start_session(
         self,
         polling_mode: TriggerMode = TriggerMode.SCHEDULED,
         polling_interval: int = 300,
@@ -52,6 +53,17 @@ class EmailIngestionOrchestrator:
             print("[Orchestrator] Session already running")
             return False
         
+        # Ensure a clean state before starting a new session
+        current_session_state = session_manager.get_session_status()["state"]
+        if current_session_state != SessionState.TERMINATED.value:
+            print(f"[Orchestrator] Found active session ({current_session_state}), terminating before starting new one...")
+            session_manager.terminate_session(reason="previous_session_cleanup")
+            # Give Redis a moment to update
+            await asyncio.sleep(1)
+            # Verify termination
+            if session_manager.get_session_status()["state"] != SessionState.TERMINATED.value:
+                print("[Orchestrator] WARNING: Previous session termination failed. Proceeding anyway.")
+            
         # Tạo session config
         session_id = f"session_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         config = SessionConfig(
@@ -98,7 +110,7 @@ class EmailIngestionOrchestrator:
             # Phase 2: Start Webhook (if enabled)
             if enable_webhook:
                 print("\n[Orchestrator] Phase 2: Starting Webhook Service...")
-                if not webhook_service.start():
+                if not await webhook_service.start():
                     print("[Orchestrator] WARNING: Webhook failed to start")
                 else:
                     print("[Orchestrator] ✓ Webhook service started")
@@ -110,7 +122,7 @@ class EmailIngestionOrchestrator:
             # Chỉ poll 1 lần duy nhất khi khởi động để dọn backlog
             # Polling định kỳ chỉ được kích hoạt khi fallback
             if polling_mode == TriggerMode.SCHEDULED:
-                result = polling_service.poll_once()
+                result = await polling_service.poll_once()
                 print(f"[Orchestrator] ✓ Initial poll complete. Found: {result.get('emails_found', 0)}, Enqueued: {result.get('enqueued', 0)}")
                 
                 # Nếu có webhook, chuyển sang chế độ webhook-only ngay lập tức
@@ -140,7 +152,7 @@ class EmailIngestionOrchestrator:
             self._cleanup()
             return False
     
-    def stop_session(self, reason: str = "user_requested"):
+    async def stop_session(self, reason: str = "user_requested"):
         """Dừng phiên làm việc"""
         if not self.running:
             print("[Orchestrator] No active session")
@@ -197,13 +209,13 @@ class EmailIngestionOrchestrator:
         
         return status
     
-    def trigger_manual_poll(self) -> dict:
+    async def trigger_manual_poll(self) -> dict:
         """Trigger polling thủ công"""
         if not self.running:
             return {"error": "No active session"}
         
         print("\n[Orchestrator] Manual poll triggered")
-        result = polling_service.poll_once()
+        result = await polling_service.poll_once()
         
         # Show queue status after poll
         queue_stats = get_email_queue().get_stats()
@@ -211,7 +223,7 @@ class EmailIngestionOrchestrator:
         
         return result
     
-    def wait_for_session(self):
+    async def wait_for_session(self):
         """Chờ session chạy (blocking)"""
         if not self.running:
             print("[Orchestrator] No active session to wait for")
@@ -224,7 +236,7 @@ class EmailIngestionOrchestrator:
             monitor_interval = 10
             
             while self.running:
-                time.sleep(monitor_interval)
+                await asyncio.sleep(monitor_interval)
                 
                 # Get status
                 status = self.get_status()
@@ -240,7 +252,7 @@ class EmailIngestionOrchestrator:
         
         except KeyboardInterrupt:
             print("\n[Orchestrator] Interrupted by user")
-            self.stop_session(reason="user_interrupt")
+            await self.stop_session(reason="user_interrupt")
     
     def _print_monitoring(self, status: dict):
         """Print monitoring information"""
@@ -258,18 +270,18 @@ class EmailIngestionOrchestrator:
             if batch.get('avg_batch_time', 0) > 0:
                 print(f"  Performance: {batch['avg_batch_time']:.2f}s/batch")
     
-    def _cleanup(self):
+    async def _cleanup(self):
         """Cleanup tất cả services"""
         print("[Orchestrator] Cleaning up services...")
         
         # Stop polling first (stop feeding queue)
         if polling_service.active:
-            polling_service.stop()
+            await polling_service.stop()
             print("[Orchestrator] ✓ Polling stopped")
         
         # Stop webhook
         if webhook_service.active:
-            webhook_service.stop()
+            await webhook_service.stop()
             print("[Orchestrator] ✓ Webhook stopped")
         
         # Let batch processor finish current batch
@@ -293,7 +305,7 @@ class EmailIngestionOrchestrator:
     def _signal_handler(self, signum, frame):
         """Handle SIGINT/SIGTERM"""
         print(f"\n[Orchestrator] Received signal {signum}")
-        self.stop_session(reason="signal_interrupt")
+        asyncio.run(self.stop_session(reason="signal_interrupt"))
         sys.exit(0)
 
 
@@ -303,7 +315,7 @@ orchestrator = EmailIngestionOrchestrator()
 
 # ============= CLI Interface =============
 
-def main():
+async def main():
     """CLI interface với batch processing options"""
     import argparse
     
@@ -367,7 +379,7 @@ def main():
         )
         
         session_manager.start_session(config)
-        result = polling_service.poll_once()
+        result = await polling_service.poll_once()
         session_manager.terminate_session("one_time_complete")
         
         print("\n" + "=" * 70)
@@ -386,7 +398,7 @@ def main():
     enable_webhook = not args.no_webhook
     
     # Start session
-    success = orchestrator.start_session(
+    success = await orchestrator.start_session(
         polling_mode=polling_mode,
         polling_interval=args.interval,
         enable_webhook=enable_webhook,
@@ -399,8 +411,8 @@ def main():
         sys.exit(1)
     
     # Wait for session
-    orchestrator.wait_for_session()
+    await orchestrator.wait_for_session()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

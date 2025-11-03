@@ -6,7 +6,7 @@ import pytest
 import time
 import json
 from datetime import datetime, timezone, timedelta
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 from typing import List, Dict
 import httpx
 
@@ -96,13 +96,12 @@ def session_manager_instance(redis_storage):
 @pytest.fixture
 def mock_graph_api():
     """Mock Microsoft Graph API responses"""
-    with patch('httpx.Client') as mock_httpx_client:
-            mock_client_instance = MagicMock()
-            mock_httpx_client.return_value.__enter__.return_value = mock_client_instance
+    with patch('httpx.AsyncClient') as mock_httpx_client:
+            mock_client_instance = AsyncMock()
+            mock_httpx_client.return_value.__aenter__.return_value = mock_client_instance
+            mock_httpx_client.return_value.__aexit__.return_value = False # Indicate no exception handled
             
-            # Mock email fetch response
-            mock_client_instance.get.return_value.status_code = 200
-            mock_client_instance.get.return_value.json.return_value = {
+            mock_client_instance.get = AsyncMock(return_value=AsyncMock(status_code=200, json=lambda: {
                 "value": [
                     {
                         "id": "test_email_1",
@@ -124,19 +123,18 @@ def mock_graph_api():
                     }
                 ],
                 "@odata.nextLink": None
-            }
+            }))
             
             # Mock mark as read
-            mock_client_instance.patch.return_value.status_code = 200
+            mock_client_instance.patch = AsyncMock(return_value=AsyncMock(status_code=200))
             
             # Mock batch mark as read
-            mock_client_instance.post.return_value.status_code = 200
-            mock_client_instance.post.return_value.json.return_value = {
+            mock_client_instance.post = AsyncMock(return_value=AsyncMock(status_code=200, json=lambda: {
                 "responses": [
                     {"id": "1", "status": 200},
                     {"id": "2", "status": 200}
                 ]
-            }
+            }))
             
             yield {
                 "get": mock_client_instance.get,
@@ -156,13 +154,14 @@ def mock_token():
 class TestPollingOnce:
     """Test trường hợp polling một lần (manual trigger)"""
     
-    def test_polling_once_success(self, redis_storage, email_queue, mock_graph_api, mock_token):
+    @pytest.mark.asyncio
+    async def test_polling_once_success(self, redis_storage, email_queue, mock_graph_api, mock_token):
         """Test polling thành công và enqueue emails"""
         # Setup
         polling_service = PollingService()
         
         # Execute
-        result = polling_service.poll_once()
+        result = await polling_service.poll_once()
         
         # Verify
         assert result["status"] == "success"
@@ -182,7 +181,8 @@ class TestPollingOnce:
         
         print("✅ Test polling once success - PASSED")
     
-    def test_polling_once_duplicate_skip(self, redis_storage, email_queue, 
+    @pytest.mark.asyncio
+    async def test_polling_once_duplicate_skip(self, redis_storage, email_queue, 
                                          session_manager_instance, mock_graph_api, mock_token):
         """Test polling bỏ qua emails đã processed"""
         # Setup - mark one email as processed
@@ -191,7 +191,7 @@ class TestPollingOnce:
         polling_service = PollingService()
         
         # Execute
-        result = polling_service.poll_once()
+        result = await polling_service.poll_once()
         
         # Verify
         assert result["status"] == "success"
@@ -201,20 +201,20 @@ class TestPollingOnce:
         
         print("✅ Test polling duplicate skip - PASSED")
     
-    def test_polling_once_no_emails(self, redis_storage, email_queue, mock_token):
+    @pytest.mark.asyncio
+    async def test_polling_once_no_emails(self, redis_storage, email_queue, mock_token):
         """Test polling khi không có email mới"""
         # Setup - mock empty response
-        with patch('httpx.get') as mock_get:
-            mock_get.return_value.status_code = 200
-            mock_get.return_value.json.return_value = {
-                "value": [],
-                "@odata.nextLink": None
-            }
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_client.return_value.__aenter__.return_value.get.return_value = httpx.Response(
+                200,
+                json={"value": [], "@odata.nextLink": None}
+            )
             
             polling_service = PollingService()
             
             # Execute
-            result = polling_service.poll_once()
+            result = await polling_service.poll_once()
             
             # Verify
             assert result["status"] == "success"
@@ -223,17 +223,18 @@ class TestPollingOnce:
             
         print("✅ Test polling no emails - PASSED")
     
-    def test_polling_once_api_error(self, redis_storage, email_queue, mock_token):
+    @pytest.mark.asyncio
+    async def test_polling_once_api_error(self, redis_storage, email_queue, mock_token):
         """Test polling xử lý lỗi API"""
-        with patch('httpx.Client') as mock_httpx_client:
+        with patch('httpx.AsyncClient') as mock_httpx_client:
             mock_client_instance = MagicMock()
-            mock_httpx_client.return_value.__enter__.return_value = mock_client_instance
+            mock_httpx_client.return_value.__aenter__.return_value = mock_client_instance
             mock_client_instance.get.side_effect = httpx.RequestError("API Connection Error", request=MagicMock())
             
             polling_service = PollingService()
             
             # Execute
-            result = polling_service.poll_once()
+            result = await polling_service.poll_once()
             
             # Verify
             assert result["status"] == "error"
@@ -246,7 +247,8 @@ class TestPollingOnce:
 class TestHybridIngestion:
     """Test trường hợp hybrid: Polling initial + Webhook active"""
     
-    def test_hybrid_initial_polling_then_webhook(self, redis_storage, email_queue, 
+    @pytest.mark.asyncio
+    async def test_hybrid_initial_polling_then_webhook(self, redis_storage, email_queue, 
                                                   session_manager_instance, mock_graph_api, mock_token):
         """Test luồng hybrid: polling ban đầu -> chuyển sang webhook"""
         # Step 1: Start session in BOTH_ACTIVE mode
@@ -268,7 +270,7 @@ class TestHybridIngestion:
         
         # Step 2: Perform initial polling
         polling_service = PollingService()
-        result = polling_service.poll_once()
+        result = await polling_service.poll_once()
         
         assert result["status"] == "success"
         assert result["enqueued"] == 2
@@ -315,7 +317,7 @@ class TestHybridIngestion:
             
             # Mock mark as read
             with patch.object(webhook_service, '_mark_as_read'):
-                result = webhook_service.handle_notification(notification_data)
+                result = await webhook_service.handle_notification(notification_data)
         
         assert result["status"] == "success"
         assert result["enqueued"] == 1
@@ -328,7 +330,8 @@ class TestHybridIngestion:
         
         print("✅ Test hybrid ingestion - PASSED")
     
-    def test_hybrid_webhook_duplicate_skip(self, redis_storage, email_queue, 
+    @pytest.mark.asyncio
+    async def test_hybrid_webhook_duplicate_skip(self, redis_storage, email_queue, 
                                            session_manager_instance, mock_token):
         """Test webhook bỏ qua email đã được polling xử lý"""
         # Setup: Mark email as processed from polling
@@ -345,7 +348,7 @@ class TestHybridIngestion:
             ]
         }
         
-        result = webhook_service.handle_notification(notification_data)
+        result = await webhook_service.handle_notification(notification_data)
         
         # Verify: Should skip (0 enqueued)
         assert result["status"] == "success"
@@ -357,7 +360,8 @@ class TestHybridIngestion:
 class TestFallbackNoWebhook:
     """Test trường hợp fallback: Webhook fail -> Polling takes over"""
     
-    def test_fallback_activation_on_webhook_errors(self, redis_storage, session_manager_instance, mock_token):
+    @pytest.mark.asyncio
+    async def test_fallback_activation_on_webhook_errors(self, redis_storage, session_manager_instance, mock_token):
         """Test kích hoạt fallback khi webhook có nhiều lỗi"""
         # Step 1: Start in WEBHOOK_ACTIVE mode
         config = SessionConfig(
@@ -391,11 +395,10 @@ class TestFallbackNoWebhook:
         print("✅ Step 2: Fallback activated, now in BOTH_ACTIVE mode")
         
         # Step 3: Verify polling can now work
-        with patch('httpx.Client') as mock_httpx_client:
-            mock_client_instance = MagicMock()
-            mock_httpx_client.return_value.__enter__.return_value = mock_client_instance
-            mock_client_instance.get.return_value.status_code = 200
-            mock_client_instance.get.return_value.json.return_value = {
+        with patch('httpx.AsyncClient') as mock_httpx_client:
+            mock_client_instance = AsyncMock()
+            mock_httpx_client.return_value.__aenter__.return_value = mock_client_instance
+            mock_client_instance.get.return_value = AsyncMock(status_code=200, json=lambda: {
                 "value": [
                     {
                         "id": "fallback_email_1",
@@ -407,14 +410,14 @@ class TestFallbackNoWebhook:
                     }
                 ],
                 "@odata.nextLink": None
-            }
+            })
             
             # Mock batch mark as read
             with patch.object(mock_client_instance, 'post') as mock_post:
-                mock_post.return_value.status_code = 200
+                mock_post.return_value = AsyncMock(status_code=200)
                 
                 polling_service = PollingService()
-                result = polling_service.poll_once()
+                result = await polling_service.poll_once()
         
         assert result["status"] == "success"
         assert result["enqueued"] == 1

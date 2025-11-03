@@ -38,7 +38,7 @@ async def webhook_notifications(request: Request):
         # Handle notification
         body = await request.json()
         webhook_service = get_webhook_service()
-        result = webhook_service.handle_notification(body)
+        result = await webhook_service.handle_notification(body)  # ✅ Added await
         
         return JSONResponse(result, status_code=202)
     except Exception as e:

@@ -18,8 +18,12 @@ from concurrent_storage.redis_manager import get_redis_storage
 from utils.config import (
     GRAPH_API_RATE_LIMIT_THRESHOLD,
     GRAPH_API_RATE_LIMIT_WINDOW_SECONDS,
-    GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS
+    GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS,
+    GRAPH_API_MAX_RETRIES,
+    GRAPH_API_INITIAL_BACKOFF_SECONDS,
+    GRAPH_API_BACKOFF_FACTOR
 )
+from utils.api_retry import api_retry
 
 class WebhookService:
     """Dịch vụ webhook cho email notifications"""
@@ -70,7 +74,7 @@ class WebhookService:
         return True
 
     
-    def start(self) -> bool:
+    async def start(self) -> bool:
         """Khởi động webhook service"""
         if self.active:
             print(f"[WebhookService] Already active")
@@ -92,7 +96,7 @@ class WebhookService:
             time.sleep(3)  # Đợi server khởi động
             
             # Step 4: Create subscription
-            self.subscription_id = self._create_subscription()
+            self.subscription_id = await self._create_subscription()
             if not self.subscription_id:
                 raise Exception("Failed to create subscription")
             
@@ -112,7 +116,7 @@ class WebhookService:
             self.stop()
             return False
     
-    def stop(self):
+    async def stop(self):
         """Dừng webhook service"""
         if not self.active:
             return
@@ -121,7 +125,7 @@ class WebhookService:
         
         # Delete subscription
         if self.subscription_id:
-            self._delete_subscription()
+            await self._delete_subscription()
         
         # Stop FastAPI server
         if self.server_process:
@@ -136,7 +140,7 @@ class WebhookService:
         self.active = False
         print(f"[WebhookService] Stopped")
     
-    def handle_notification(self, notification_data: Dict) -> Dict:
+    async def handle_notification(self, notification_data: Dict) -> Dict:
         """Xử lý notification từ Microsoft Graph"""
         try:
             enqueued_count = 0
@@ -153,7 +157,7 @@ class WebhookService:
                     continue
                 
                 # Fetch email detail
-                message = self._fetch_email_detail(msg_id)
+                message = await self._fetch_email_detail(msg_id)
                 if message:
                     # Enqueue email for batch processing
                     enqueued_id = self.queue.enqueue(msg_id, message)
@@ -161,7 +165,7 @@ class WebhookService:
                         session_manager.register_pending_email(msg_id)
                         enqueued_count += 1
                         print(f"[WebhookService] Enqueued email: {msg_id}")
-                        self._mark_as_read(enqueued_id)  # Mark as read immediately
+                        asyncio.create_task(self._mark_as_read(enqueued_id))  # Mark as read immediately
             
             # Reset error count khi thành công
             self.error_count = 0
@@ -196,7 +200,8 @@ class WebhookService:
         from core.polling_service import polling_service, TriggerMode
         polling_service.start(mode=TriggerMode.FALLBACK, interval=300)
     
-    def _fetch_email_detail(self, message_id: str) -> Optional[Dict]:
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _fetch_email_detail(self, message_id: str) -> Optional[Dict]:
         """Lấy chi tiết email từ Graph API"""
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
@@ -205,17 +210,17 @@ class WebhookService:
         if not self._check_and_wait_for_rate_limit():
             return None
         try:
-            with httpx.Client() as client:
-                resp = client.get(url, headers=headers, timeout=10)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers, timeout=10)            
             if resp.status_code == 200:
                 return resp.json()
-            return None
         except httpx.RequestError as e:
             print(f"[WebhookService] Fetch email error: {e}")
             return None
     
-    def _mark_as_read(self, message_id: str):
-        """Mark a single email as read in a background thread."""
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _mark_as_read(self, message_id: str):
+        """Mark a single email as read."""
         token = get_token()
         headers = {
             "Authorization": f"Bearer {token}",
@@ -224,18 +229,14 @@ class WebhookService:
         url = f"{self.GRAPH_URL}/me/messages/{message_id}"
         body = {"isRead": True}
 
-        def do_patch():
-            try:
-                if not self._check_and_wait_for_rate_limit():
-                    return
-                with httpx.Client() as client:
-                    client.patch(url, headers=headers, json=body, timeout=10)
-                print(f"[WebhookService] ✓ Marked {message_id} as read.")
-            except httpx.RequestError as e:
-                print(f"[WebhookService] ERROR: Failed to mark {message_id} as read: {e}")
-        
-        # Run in a separate thread to not block the webhook response
-        threading.Thread(target=do_patch, daemon=True).start()
+        try:
+            if not self._check_and_wait_for_rate_limit():
+                return
+            async with httpx.AsyncClient() as client:
+                await client.patch(url, headers=headers, json=body, timeout=10)
+            print(f"[WebhookService] ✓ Marked {message_id} as read.")
+        except httpx.RequestError as e:
+            print(f"[WebhookService] ERROR: Failed to mark {message_id} as read: {e}")
     
     def _start_ngrok(self) -> str:
         """Khởi động ngrok tunnel riêng cho webhook"""
@@ -283,7 +284,8 @@ class WebhookService:
         ]
         self.server_process = subprocess.Popen(cmd)
     
-    def _create_subscription(self) -> Optional[str]:
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _create_subscription(self) -> Optional[str]:
         """Tạo Microsoft Graph subscription"""
         token = get_token()
         headers = {
@@ -305,14 +307,13 @@ class WebhookService:
         try:
             if not self._check_and_wait_for_rate_limit():
                 return None
-            with httpx.Client() as client:
-                resp = client.post(
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
                     f"{self.GRAPH_URL}/subscriptions",
                     headers=headers,
                     json=payload,
                     timeout=30
-                )
-            
+                    )            
             if resp.status_code == 201:
                 data = resp.json()
                 sub_id = data.get("id")
@@ -329,7 +330,8 @@ class WebhookService:
             print(f"[WebhookService] Subscription error: {e}")
             return None
     
-    def _delete_subscription(self):
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _delete_subscription(self):
         """Xóa subscription"""
         if not self.subscription_id:
             return
@@ -340,17 +342,18 @@ class WebhookService:
         try:
             if not self._check_and_wait_for_rate_limit():
                 return
-            with httpx.Client() as client:
-                client.delete(
+            async with httpx.AsyncClient() as client:
+                await client.delete(
                     f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
                     headers=headers,
                     timeout=10
-                )
-            print(f"[WebhookService] Subscription deleted")
+                        )            
+                print(f"[WebhookService] Subscription deleted")
         except httpx.RequestError as e:
             print(f"[WebhookService] Delete subscription error: {e}")
     
-    def _renew_subscription(self) -> bool:
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _renew_subscription(self) -> bool:
         """Renew subscription"""
         if not self.subscription_id:
             return False
@@ -366,14 +369,13 @@ class WebhookService:
         try:
             if not self._check_and_wait_for_rate_limit():
                 return False
-            with httpx.Client() as client:
-                resp = client.patch(
-                    f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
-                    headers=headers,
-                    json=payload,
-                    timeout=10
-                )
-            
+            async with httpx.AsyncClient() as client:
+                        resp = await client.patch(
+                            f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
+                            headers=headers,
+                            json=payload,
+                            timeout=10
+                        )            
             if resp.status_code == 200:
                 print(f"[WebhookService] Subscription renewed until {new_exp}")
                 return True
@@ -385,13 +387,13 @@ class WebhookService:
     
     def _start_renewal_watcher(self):
         """Khởi động watcher tự động renew subscription"""
-        def renewal_loop():
+        async def renewal_loop():
             check_interval = 300  # 5 phút
             threshold_hours = 1
             
             while self.active:
                 try:
-                    time.sleep(check_interval)
+                    await asyncio.sleep(check_interval)
                     
                     # Get subscription status
                     if not self._check_and_wait_for_rate_limit():
@@ -399,8 +401,8 @@ class WebhookService:
                     token = get_token()
                     headers = {"Authorization": f"Bearer {token}"}
                     
-                    with httpx.Client() as client:
-                        resp = client.get(
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(
                             f"{self.GRAPH_URL}/subscriptions/{self.subscription_id}",
                             headers=headers,
                             timeout=10
@@ -408,7 +410,7 @@ class WebhookService:
                     
                     if resp.status_code != 200:
                         print(f"[WebhookService] Subscription not found, recreating...")
-                        self.subscription_id = self._create_subscription()
+                        self.subscription_id = await self._create_subscription()
                         continue
                     
                     sub = resp.json()
@@ -420,13 +422,12 @@ class WebhookService:
                     # Renew if needed
                     if hours_left < threshold_hours:
                         print(f"[WebhookService] Renewing (only {hours_left:.1f}h left)")
-                        self._renew_subscription()
+                        await self._renew_subscription()
                 
                 except Exception as e:
                     print(f"[WebhookService] Renewal watcher error: {e}")
         
-        thread = threading.Thread(target=renewal_loop, daemon=True)
-        thread.start()
+        asyncio.create_task(renewal_loop())
     
     def get_status(self) -> Dict:
         """Lấy trạng thái webhook service"""

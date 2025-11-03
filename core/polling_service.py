@@ -11,12 +11,16 @@ from utils.config import (
     MAX_POLL_PAGES as max_pages,
     GRAPH_API_RATE_LIMIT_THRESHOLD,
     GRAPH_API_RATE_LIMIT_WINDOW_SECONDS,
-    GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS
+    GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS,
+    GRAPH_API_MAX_RETRIES,
+    GRAPH_API_INITIAL_BACKOFF_SECONDS,
+    GRAPH_API_BACKOFF_FACTOR
 )
 from core.session_manager import session_manager, SessionState, TriggerMode
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
 from concurrent_storage.redis_manager import get_redis_storage
+from utils.api_retry import api_retry
 
 class PollingService:
     """
@@ -101,7 +105,7 @@ class PollingService:
         
         return True
     
-    def poll_once(self) -> Dict:
+    async def poll_once(self) -> Dict:
         """
         Fetch emails và enqueue (không xử lý)
         Processing sẽ do BatchProcessor đảm nhận
@@ -111,7 +115,7 @@ class PollingService:
             start_time = time.time()
             
             # Fetch emails
-            messages = self._fetch_unread_emails()
+            messages = await self._fetch_unread_emails()
             fetch_time = time.time() - start_time
             
             if not messages:
@@ -145,7 +149,7 @@ class PollingService:
             
             # Mark enqueued emails as read immediately
             if enqueued_ids:
-                self._batch_mark_as_read(enqueued_ids)
+                await self._batch_mark_as_read(enqueued_ids)
             
             # Update session stats
             for msg in messages:
@@ -203,7 +207,8 @@ class PollingService:
         
         print(f"[PollingService] Background polling stopped")
     
-    def _fetch_unread_emails(self, max_results: int = 100) -> List[Dict]:
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _fetch_unread_emails(self, max_results: int = 100) -> List[Dict]:
         """
         Fetch unread emails from Graph API
         
@@ -227,8 +232,8 @@ class PollingService:
             if not self._check_and_wait_for_rate_limit():
                 break
             try:
-                with httpx.Client() as client:
-                    resp = client.get(url, headers=headers, params=params, timeout=30)
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, headers=headers, params=params, timeout=30)
                 # Params are only needed for the first request. Subsequent requests use the full nextLink, so we clear it.
                 if params:
                     params = None 
@@ -257,7 +262,8 @@ class PollingService:
 
         return all_messages
 
-    def _batch_mark_as_read(self, email_ids: List[str]):
+    @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
+    async def _batch_mark_as_read(self, email_ids: List[str]):
         """
         Mark a batch of emails as read using Microsoft Graph batching.
         This is more efficient than sending individual requests.
@@ -287,14 +293,14 @@ class PollingService:
         try:
             if not self._check_and_wait_for_rate_limit():
                 return
-            with httpx.Client() as client:
-                response = client.post(
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
                     f"{self.GRAPH_URL}/$batch",
                     headers=headers,
                     json=batch_payload,
                     timeout=60
                 )
-            response.raise_for_status()
+            await response.raise_for_status()
             print(f"[PollingService] ✓ Successfully marked {len(email_ids)} as read.")
         except httpx.RequestError as e:
             print(f"[PollingService] ERROR: Failed to batch mark as read: {e}")
