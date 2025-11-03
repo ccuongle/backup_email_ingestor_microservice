@@ -28,6 +28,7 @@ class RedisStorageManager:
     KEY_METRICS_PREFIX = "metrics:"
     KEY_COUNTER_PREFIX = "counter:"
     KEY_RATELIMIT_PREFIX = "ratelimit:"
+    KEY_MS4_OUTBOUND_QUEUE = "queue:ms4_outbound"
     
     # TTL defaults (seconds)
     TTL_PROCESSED_EMAILS = 30 * 24 * 3600  # 30 days
@@ -184,6 +185,39 @@ class RedisStorageManager:
     def get_failed_count(self) -> int:
         """Số lượng failed emails"""
         return self.redis.llen(self.KEY_FAILED)
+
+    # ==================== MS4 OUTBOUND QUEUE ====================
+
+    def enqueue_batch_for_ms4(self, batch_payloads: List[Dict[str, Any]]):
+        """
+        Enqueue a batch of processed payloads for MS4.
+        Each item in the list is a JSON string.
+        """
+        if not batch_payloads:
+            return
+        # Serialize each payload to a JSON string before pushing to Redis
+        serialized_payloads = [json.dumps(p) for p in batch_payloads]
+        self.redis.lpush(self.KEY_MS4_OUTBOUND_QUEUE, *serialized_payloads)
+
+    def get_ms4_outbound_queue_size(self) -> int:
+        """Get the number of payloads in the MS4 outbound queue."""
+        return self.redis.llen(self.KEY_MS4_OUTBOUND_QUEUE)
+
+    def dequeue_ms4_batch(self, batch_size: int) -> List[Dict[str, Any]]:
+        """
+        Dequeue a batch of payloads for MS4.
+        """
+        # Use a pipeline to retrieve and trim the list atomically
+        pipe = self.redis.pipeline()
+        pipe.lrange(self.KEY_MS4_OUTBOUND_QUEUE, -batch_size, -1)
+        pipe.ltrim(self.KEY_MS4_OUTBOUND_QUEUE, 0, -batch_size - 1)
+        batch_json, _ = pipe.execute()
+        
+        if not batch_json:
+            return []
+        
+        # Deserialize each payload from JSON string to a dictionary
+        return [json.loads(p) for p in batch_json]
     
     # ==================== SESSION STATE ====================
     

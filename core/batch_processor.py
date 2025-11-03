@@ -13,6 +13,7 @@ from core.queue_manager import get_email_queue
 from core.unified_email_processor import EmailProcessor
 from core.session_manager import session_manager
 from core.token_manager import get_token
+from cache.redis_manager import get_redis_storage
 
 
 class BatchEmailProcessor:
@@ -40,12 +41,16 @@ class BatchEmailProcessor:
         self.fetch_interval = fetch_interval
 
         self.queue = get_email_queue()
+        self.redis_manager = get_redis_storage()
         self.processor = email_processor  # 👈 Không khởi tạo ngay, chỉ lưu nếu test cung cấp
         self.executor: Optional[ThreadPoolExecutor] = None
 
         self.active = False
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+
+        # Payload accumulation
+        self.payload_batch: List[Dict] = []
 
         # Stats
         self.stats = {
@@ -102,7 +107,13 @@ class BatchEmailProcessor:
         # Wait for thread
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=10)
-        
+
+        # Flush any remaining payloads
+        if self.payload_batch:
+            print(f"[BatchProcessor] Enqueuing remaining {len(self.payload_batch)} payloads before shutdown...")
+            self.redis_manager.enqueue_batch_for_ms4(self.payload_batch)
+            self.payload_batch.clear()
+
         # Shutdown executor
         if self.executor:
             self.executor.shutdown(wait=True, cancel_futures=False)
@@ -158,13 +169,23 @@ class BatchEmailProcessor:
                     self.stats["total_processing_time"] / 
                     self.stats["batches_processed"]
                 )
-                
+
+                # Accumulate payloads
+                if result["payloads"]:
+                    self.payload_batch.extend(result["payloads"])
+
                 print(f"[BatchProcessor] Batch completed in {batch_time:.2f}s")
                 print(f"  Success: {result['success']}")
                 print(f"  Failed: {result['failed']}")
-                print(f"  Payloads received: {len(result['payloads'])}") # Placeholder for batching
+                print(f"  Payloads accumulated: {len(self.payload_batch)}")
                 print(f"  Rate: {len(batch)/batch_time:.1f} emails/s")
-                
+
+                # If batch is full, enqueue to MS4 outbound queue
+                if len(self.payload_batch) >= self.batch_size:
+                    print(f"[BatchProcessor] Enqueuing batch of {len(self.payload_batch)} payloads to MS4 outbound queue...")
+                    self.redis_manager.enqueue_batch_for_ms4(self.payload_batch)
+                    self.payload_batch.clear()
+
                 # Re-queue timeouts periodically
                 if self.stats["batches_processed"] % 10 == 0:
                     self.queue.requeue_timeouts()
