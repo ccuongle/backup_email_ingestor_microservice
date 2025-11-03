@@ -144,16 +144,39 @@ class WebhookService:
         """Xử lý notification từ Microsoft Graph"""
         try:
             enqueued_count = 0
+            skipped_count = 0
             notifications = notification_data.get("value", [])
+            
+            # Group notifications by email ID to handle duplicates
+            seen_ids = set()
+            unique_notifications = []
             
             for notif in notifications:
                 msg_id = notif.get("resourceData", {}).get("id")
                 if not msg_id:
                     continue
                 
-                # Kiểm tra duplicate
-                if self.queue.is_in_queue(msg_id) or session_manager.is_email_processed(msg_id):
-                    print(f"[WebhookService] Skipping duplicate email: {msg_id}")
+                # Skip if already seen in this batch
+                if msg_id in seen_ids:
+                    continue
+                
+                seen_ids.add(msg_id)
+                unique_notifications.append((msg_id, notif))
+            
+            # Process unique notifications
+            for msg_id, notif in unique_notifications:
+                # Kiểm tra duplicate (already queued or processed)
+                if self.queue.is_in_queue(msg_id):
+                    skipped_count += 1
+                    # Only log if verbose mode or first time
+                    if skipped_count == 1:
+                        print(f"[WebhookService] Skipping {len(unique_notifications) - enqueued_count} duplicate(s) in queue")
+                    continue
+                
+                if session_manager.is_email_processed(msg_id):
+                    skipped_count += 1
+                    if skipped_count == 1:
+                        print(f"[WebhookService] Skipping {len(unique_notifications) - enqueued_count} already processed email(s)")
                     continue
                 
                 # Fetch email detail
@@ -164,15 +187,25 @@ class WebhookService:
                     if enqueued_id:
                         session_manager.register_pending_email(msg_id)
                         enqueued_count += 1
-                        print(f"[WebhookService] Enqueued email: {msg_id}")
-                        asyncio.create_task(self._mark_as_read(enqueued_id))  # Mark as read immediately
+                        print(f"[WebhookService] ✓ Enqueued: {msg_id[:50]}...")
+                        
+                        # Mark as read immediately (fire and forget)
+                        asyncio.create_task(self._mark_as_read(enqueued_id))
+                    else:
+                        # enqueue returned None - already in queue or processed
+                        skipped_count += 1
+            
+            # Summary log
+            if enqueued_count > 0 or skipped_count > 0:
+                print(f"[WebhookService] Notification batch: {enqueued_count} enqueued, {skipped_count} skipped")
             
             # Reset error count khi thành công
             self.error_count = 0
             
             return {
                 "status": "success",
-                "enqueued": enqueued_count
+                "enqueued": enqueued_count,
+                "skipped": skipped_count
             }
         
         except Exception as e:
@@ -187,7 +220,7 @@ class WebhookService:
                 "status": "error",
                 "error": str(e)
             }
-    
+        
     def _activate_fallback(self):
         """Kích hoạt fallback polling khi webhook lỗi"""
         print(f"[WebhookService] Too many errors ({self.error_count}), activating fallback")
