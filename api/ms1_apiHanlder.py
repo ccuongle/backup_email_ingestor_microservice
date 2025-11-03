@@ -3,12 +3,13 @@ api_service.py
 HTTP API điều khiển Email Ingestion Microservice
 Chạy trên port riêng (8000) - không conflict với webhook (8100)
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
 from typing import Optional
 from enum import Enum
 from main_orchestrator import orchestrator
 from core.session_manager import TriggerMode
+from concurrent_storage.redis_manager import get_redis_storage
 
 app = FastAPI(
     title="Email Ingestion Control API",
@@ -40,9 +41,14 @@ async def root():
     }
 
 @app.get("/health")
-async def health_check():
+async def health_check(response: Response):
     """Health check"""
-    return {"status": "healthy"}
+    redis_manager = get_redis_storage()
+    if await redis_manager.check_redis_connection():
+        return {"status": "healthy"}
+    else:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "unhealthy", "dependencies": {"redis": "unhealthy"}}
 
 @app.post("/session/start")
 async def start_session(request: StartSessionRequest):
@@ -130,22 +136,15 @@ async def get_metrics():
     """
     Lấy metrics tổng quan
     """
-    try:
-        status = orchestrator.get_status()
-        return {
-            "session_active": orchestrator.running,
-            "total_processed": status["session"]["processed_count"],
-            "total_pending": status["session"]["pending_count"],
-            "polling_errors": status["session"]["polling_errors"],
-            "webhook_errors": status["session"]["webhook_errors"],
-            "services": {
-                "polling_active": status["polling"]["active"],
-                "webhook_active": status["webhook"]["active"]
-            },
-            "timestamp": status["timestamp"]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    redis_manager = get_redis_storage()
+    processed = await redis_manager.get_total_emails_processed()
+    failed = await redis_manager.get_total_emails_failed()
+    queue_size = await redis_manager.get_inbound_queue_size()
+    return {
+        "emails_processed": processed,
+        "emails_failed": failed,
+        "current_queue_size": queue_size
+    }
 
 if __name__ == "__main__":
     import uvicorn

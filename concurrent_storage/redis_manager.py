@@ -451,11 +451,40 @@ class RedisStorageManager:
         counter_key = f"{self.KEY_COUNTER_PREFIX}{counter_name}"
         value = self.redis.get(counter_key)
         return int(value) if value else 0
+
+    async def get_total_emails_processed(self) -> int:
+        return self.get_counter("total_processed")
+
+    async def get_total_emails_failed(self) -> int:
+        return self.get_counter("total_failed")
+
+    async def get_inbound_queue_size(self) -> int:
+        return self.get_pending_count()
     
     def reset_counter(self, counter_name: str):
         """Reset counter to 0"""
         counter_key = f"{self.KEY_COUNTER_PREFIX}{counter_name}"
         self.redis.delete(counter_key)
+
+    async def check_redis_connection(self) -> bool:
+        """
+        Check Redis connection asynchronously
+        """
+        try:
+            import redis.asyncio as redis
+            r = redis.Redis(
+                host=self.redis.connection_pool.connection_kwargs.get('host'),
+                port=self.redis.connection_pool.connection_kwargs.get('port'),
+                db=self.redis.connection_pool.connection_kwargs.get('db'),
+                password=self.redis.connection_pool.connection_kwargs.get('password'),
+                decode_responses=True,
+                socket_connect_timeout=5
+            )
+            result = await r.ping()
+            await r.close()
+            return result
+        except Exception:
+            return False
     
     # ==================== UTILITY METHODS ====================
     
