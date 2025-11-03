@@ -23,6 +23,9 @@ dist/
 # Logs
 *.log
 
-# BMAD (local only)
+# BMAD 
 .bmad-core/
 web-bundles/
+
+# Pdf converter: 
+python_to_pdf.py 

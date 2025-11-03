@@ -9,7 +9,7 @@ from typing import Optional
 from enum import Enum
 from main_orchestrator import orchestrator
 from core.session_manager import TriggerMode
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 
 app = FastAPI(
     title="Email Ingestion Control API",

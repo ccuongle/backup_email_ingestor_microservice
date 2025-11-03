@@ -14,7 +14,7 @@ import time
 from core.session_manager import session_manager, SessionState
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 from utils.config import (
     GRAPH_API_RATE_LIMIT_THRESHOLD,
     GRAPH_API_RATE_LIMIT_WINDOW_SECONDS,

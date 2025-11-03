@@ -3,7 +3,7 @@ Async token management
 """
 import os
 from msal import ConfidentialClientApplication
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 from utils.config import settings
 
 KEY_REFRESH_TOKEN = "auth:refresh_token"

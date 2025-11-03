@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, Set
 from dataclasses import dataclass, asdict
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 
 class SessionState(Enum):
     """Trạng thái phiên làm việc"""

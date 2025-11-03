@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 def mock_env_and_redis(session_mocker):
     """Global fixture to mock environment variables and Redis connection."""
     session_mocker.patch.dict(os.environ, {"CLIENT_ID": "dummy_id", "CLIENT_SECRET": "dummy_secret"})
-    session_mocker.patch("concurrent_storage.redis_manager.RedisStorageManager", MagicMock())
-    session_mocker.patch("concurrent_storage.redis_manager.get_redis_storage", MagicMock())
+    session_mocker.patch("cache.redis_manager.RedisStorageManager", MagicMock())
+    session_mocker.patch("cache.redis_manager.get_redis_storage", MagicMock())
 
 
 
@@ -46,7 +46,7 @@ def redis_storage(test_config):
     - Webhook subscription (webhook:subscription)
     - Production processed emails tracking
     """
-    from concurrent_storage.redis_manager import RedisStorageManager
+    from cache.redis_manager import RedisStorageManager
     
     # Create Redis instance with test DB
     redis = RedisStorageManager(
@@ -365,7 +365,7 @@ def setup_test_environment():
     
     # Verify Redis is available
     try:
-        from concurrent_storage.redis_manager import RedisStorageManager
+        from cache.redis_manager import RedisStorageManager
         test_redis = RedisStorageManager(db=15)
         test_redis.redis.ping()
         print("✅ Redis connection OK")

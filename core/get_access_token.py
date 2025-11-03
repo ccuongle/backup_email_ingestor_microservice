@@ -3,7 +3,7 @@ import os
 import msal 
 from msal import ConfidentialClientApplication
 from utils.config import CLIENT_ID, CLIENT_SECRET, SCOPES
-from concurrent_storage.redis_manager import get_redis_storage, RedisStorageManager
+from cache.redis_manager import get_redis_storage, RedisStorageManager
 
 KEY_REFRESH_TOKEN = RedisStorageManager.KEY_REFRESH_TOKEN
 

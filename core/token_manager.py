@@ -4,7 +4,7 @@ import requests, datetime, json
 from datetime import datetime, timedelta, UTC
 import msal 
 from msal import ConfidentialClientApplication
-from concurrent_storage.redis_manager import get_redis_storage, RedisStorageManager
+from cache.redis_manager import get_redis_storage, RedisStorageManager
 load_dotenv()
 
 KEY_REFRESH_TOKEN = RedisStorageManager.KEY_REFRESH_TOKEN

@@ -39,7 +39,7 @@ async def test_create_subscription_success(webhook_service, mocker):
 
     mocker.patch("httpx.AsyncClient", return_value=MagicMock(__aenter__=AsyncMock(return_value=mock_client), __aexit__=AsyncMock(return_value=False)))
     mocker.patch("core.token_manager.get_token", return_value="dummy_token")
-    mocker.patch("concurrent_storage.redis_manager.RedisStorageManager.save_subscription")
+    mocker.patch("cache.redis_manager.RedisStorageManager.save_subscription")
 
     webhook_service.public_url = "https://dummy.ngrok.io"
     subscription_id = await webhook_service._create_subscription()

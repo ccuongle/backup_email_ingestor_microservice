@@ -19,7 +19,7 @@ from utils.config import (
 from core.session_manager import session_manager, SessionState, TriggerMode
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 from utils.api_retry import api_retry
 
 class PollingService:

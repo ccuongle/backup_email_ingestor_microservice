@@ -5,7 +5,7 @@ from unittest.mock import patch, AsyncMock
 
 # Mock the orchestrator and redis_manager before importing the app
 with patch('main_orchestrator.orchestrator', new_callable=AsyncMock) as mock_orchestrator, \
-     patch('concurrent_storage.redis_manager.get_redis_storage') as mock_get_redis_storage:
+     patch('cache.redis_manager.get_redis_storage') as mock_get_redis_storage:
     
     from api.ms1_apiHanlder import app
 

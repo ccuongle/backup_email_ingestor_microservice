@@ -7,7 +7,7 @@ import json
 import time
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 
 
 class EmailQueue:

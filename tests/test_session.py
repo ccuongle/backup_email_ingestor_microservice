@@ -16,7 +16,7 @@ from core.webhook_service import WebhookService
 from core.batch_processor import BatchEmailProcessor
 from core.queue_manager import EmailQueue
 from core.session_manager import SessionManager, SessionState, SessionConfig
-from concurrent_storage.redis_manager import RedisStorageManager
+from cache.redis_manager import RedisStorageManager
 
 
 
