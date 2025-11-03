@@ -49,16 +49,11 @@ The endpoint should accept a JSON array of metadata objects. Each object in the 
 
 - **`202 Accepted`**: The batch has been successfully received and queued for processing. The response body should be empty.
 - **`400 Bad Request`**: The request payload is malformed or invalid. The response body should contain a descriptive error message.
-- **`401 Unauthorized`**: The request is missing a valid API key.
+- **`401 Unauthorized`**: The request is unauthorized.
 - **`429 Too Many Requests`**: The client has exceeded the rate limit. The response should include a `Retry-After` header.
 - **`500 Internal Server Error`**: An unexpected error occurred on the server.
 
-### 2.4. Authentication
 
-- **Method:** API Key
-- **Header:** `X-API-Key: <your-api-key>`
-
-All requests to the `/batch-metadata` endpoint must include a valid API key in the `X-API-Key` header.
 
 ### 2.5. Rate Limiting
 

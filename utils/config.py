@@ -54,7 +54,7 @@ MS4_PERSISTENCE_BASE_URL = os.getenv(
     "MS4_PERSISTENCE_BASE_URL",
     "http://localhost:8002"
 )
-MS4_API_KEY = os.getenv("MS4_API_KEY", "your_default_api_key")
+
 MS4_BATCH_SIZE = int(os.getenv("MS4_BATCH_SIZE", "50"))
 
 # ============= Service Ports =============
@@ -107,6 +107,8 @@ def validate_config():
     
     if not CLIENT_SECRET:
         errors.append("CLIENT_SECRET is required")
+    
+
     
     if API_PORT == WEBHOOK_PORT:
         errors.append(f"API_PORT ({API_PORT}) and WEBHOOK_PORT ({WEBHOOK_PORT}) must be different")

@@ -65,6 +65,9 @@ def test_batch_forwarding_throughput(mock_async_client, mock_get_token, redis_st
         print(f"Total time: {total_time:.2f}s")
         print(f"Throughput: {throughput:.2f} emails/s")
 
+        # Assert a minimum throughput
+        assert throughput > 30, "Throughput should be at least 30 emails/s"
+
     finally:
         batch_processor.stop()
         ms4_sender.stop()

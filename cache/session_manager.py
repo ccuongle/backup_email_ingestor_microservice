@@ -3,7 +3,7 @@ clear_session.py
 Script để clear session cũ và reset Redis state
 """
 import sys
-from concurrent_storage.redis_manager import get_redis_storage
+from cache.redis_manager import get_redis_storage
 from datetime import datetime, timezone
 
 

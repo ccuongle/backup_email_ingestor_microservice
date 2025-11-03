@@ -137,9 +137,11 @@ class BatchEmailProcessor:
                 queue_size = queue_stats["queue_size"]
                 shutting_down = self._stop_event.is_set()
                 
-                # Chỉ xử lý khi có đủ 1 batch, hoặc khi đang shutdown và có email tồn
-                if queue_size < self.batch_size and not (shutting_down and queue_size > 0):
-                    # Chưa đủ batch, đợi
+                # Process if: queue has enough for a full batch OR (shutting down AND there are emails)
+                if queue_size >= self.batch_size or (shutting_down and queue_size > 0):
+                    pass # Proceed with processing
+                else:
+                    # Not enough for a full batch and not shutting down with remaining emails, so wait
                     time.sleep(self.fetch_interval)
                     continue
                 

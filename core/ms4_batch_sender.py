@@ -9,7 +9,7 @@ import asyncio
 from typing import List, Dict, Optional
 
 from cache.redis_manager import get_redis_storage
-from utils.config import MS4_PERSISTENCE_BASE_URL, MS4_API_KEY, MS4_BATCH_SIZE
+from utils.config import MS4_PERSISTENCE_BASE_URL, MS4_BATCH_SIZE
 
 class MS4BatchSender:
     """
@@ -89,7 +89,6 @@ class MS4BatchSender:
             async def create_client():
                 return httpx.AsyncClient(
                     base_url=MS4_PERSISTENCE_BASE_URL,
-                    headers={"X-API-Key": MS4_API_KEY},
                     timeout=30.0,
                 )
             
