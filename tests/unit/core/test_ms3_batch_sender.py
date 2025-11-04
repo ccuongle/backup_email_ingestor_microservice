@@ -1,5 +1,5 @@
 """
-Unit tests for MS4BatchSender.
+Unit tests for ms3BatchSender.
 """
 import pytest
 import asyncio
@@ -8,17 +8,17 @@ from datetime import datetime, timezone
 import httpx
 import time
 
-from core.ms4_batch_sender import MS4BatchSender
+from core.ms3_batch_sender import ms3BatchSender
 from cache.redis_manager import RedisStorageManager
-from utils.config import MS4_BATCH_SIZE
+from utils.config import MS3_BATCH_SIZE
 
 @pytest.fixture
 def mock_redis_manager():
     """Mocks the RedisStorageManager."""
-    with patch('core.ms4_batch_sender.get_redis_storage') as mock_get_redis_storage:
+    with patch('core.ms3_batch_sender.get_redis_storage') as mock_get_redis_storage:
         mock_redis = MagicMock(spec=RedisStorageManager)
-        mock_redis.get_ms4_outbound_queue_size.return_value = 0
-        mock_redis.dequeue_ms4_batch.return_value = []
+        mock_redis.get_ms3_outbound_queue_size.return_value = 0
+        mock_redis.dequeue_ms3_batch.return_value = []
         mock_get_redis_storage.return_value = mock_redis
         yield mock_redis
 
@@ -37,23 +37,23 @@ def mock_httpx_client():
         yield mock_instance
 
 @pytest.fixture
-def ms4_batch_sender(mock_redis_manager, mock_httpx_client):
-    """Provides an instance of MS4BatchSender with mocked dependencies."""
+def ms3_batch_sender(mock_redis_manager, mock_httpx_client):
+    """Provides an instance of MS3BatchSender with mocked dependencies."""
     # Dùng fetch_interval ngắn hơn cho test
-    sender = MS4BatchSender(batch_size=2, fetch_interval=0.1)
+    sender = ms3BatchSender(batch_size=2, fetch_interval=0.1)
     yield sender
     sender.stop()
 
-def test_ms4_batch_sender_starts_and_stops(ms4_batch_sender):
+def test_ms3_batch_sender_starts_and_stops(ms3_batch_sender):
     """Tests that the sender can start and stop without errors."""
-    assert ms4_batch_sender.start() is True
-    assert ms4_batch_sender.active is True
+    assert ms3_batch_sender.start() is True
+    assert ms3_batch_sender.active is True
     time.sleep(0.2)  # Let thread start
-    ms4_batch_sender.stop()
-    assert ms4_batch_sender.active is False
+    ms3_batch_sender.stop()
+    assert ms3_batch_sender.active is False
 
-def test_ms4_batch_sender_sends_batch(ms4_batch_sender, mock_redis_manager):
-    """Tests that the sender dequeues from Redis and sends to MS4."""
+def test_ms3_batch_sender_sends_batch(ms3_batch_sender, mock_redis_manager):
+    """Tests that the sender dequeues from Redis and sends to MS3."""
     payload1 = {"id": "email1", "data": "test1"}
     payload2 = {"id": "email2", "data": "test2"}
     batch = [payload1, payload2]
@@ -66,8 +66,8 @@ def test_ms4_batch_sender_sends_batch(ms4_batch_sender, mock_redis_manager):
         # First call: có batch, second call: empty
         return len(batch) if call_count[0] == 1 else 0
     
-    mock_redis_manager.get_ms4_outbound_queue_size.side_effect = get_queue_size
-    mock_redis_manager.dequeue_ms4_batch.return_value = batch
+    mock_redis_manager.get_ms3_outbound_queue_size.side_effect = get_queue_size
+    mock_redis_manager.dequeue_ms3_batch.return_value = batch
 
     # Mock httpx AsyncClient để tránh thực sự gọi API
     with patch('httpx.AsyncClient') as mock_client_class:
@@ -79,16 +79,16 @@ def test_ms4_batch_sender_sends_batch(ms4_batch_sender, mock_redis_manager):
         mock_client_class.return_value = mock_client_instance
         
         # Start sender (tạo thread riêng)
-        assert ms4_batch_sender.start() is True
+        assert ms3_batch_sender.start() is True
         
         # Wait for thread xử lý batch
         time.sleep(1.0)  # Tăng thời gian chờ
         
         # Stop sender
-        ms4_batch_sender.stop()
+        ms3_batch_sender.stop()
         
         # Verify Redis được gọi
-        assert mock_redis_manager.dequeue_ms4_batch.called
+        assert mock_redis_manager.dequeue_ms3_batch.called
         
         # Verify HTTP client được gọi (nếu batch được xử lý)
         # Lưu ý: do timing, có thể cần retry logic
@@ -101,7 +101,7 @@ def test_ms4_batch_sender_sends_batch(ms4_batch_sender, mock_redis_manager):
 @pytest.mark.asyncio
 async def test_send_batch_success(mock_redis_manager):
     """Tests _send_batch with successful response."""
-    sender = MS4BatchSender(batch_size=2)
+    sender = ms3BatchSender(batch_size=2)
     
     # Create mock client
     mock_client = AsyncMock()
@@ -120,7 +120,7 @@ async def test_send_batch_success(mock_redis_manager):
 @pytest.mark.asyncio
 async def test_send_batch_handles_http_errors_and_retries(mock_redis_manager):
     """Tests error handling and retry logic for transient HTTP errors."""
-    sender = MS4BatchSender(batch_size=2)
+    sender = ms3BatchSender(batch_size=2)
     
     # Create mock client
     mock_client = AsyncMock()
@@ -152,7 +152,7 @@ async def test_send_batch_handles_http_errors_and_retries(mock_redis_manager):
 @pytest.mark.asyncio
 async def test_send_batch_handles_rate_limiting(mock_redis_manager):
     """Tests rate limiting handling with Retry-After header."""
-    sender = MS4BatchSender(batch_size=2)
+    sender = ms3BatchSender(batch_size=2)
     
     # Create mock client
     mock_client = AsyncMock()
@@ -185,7 +185,7 @@ async def test_send_batch_handles_rate_limiting(mock_redis_manager):
 @pytest.mark.asyncio
 async def test_send_batch_handles_non_retryable_errors(mock_redis_manager):
     """Tests that non-retryable errors (e.g., 400, 401) are not retried."""
-    sender = MS4BatchSender(batch_size=2)
+    sender = ms3BatchSender(batch_size=2)
     
     # Create mock client
     mock_client = AsyncMock()
@@ -210,28 +210,28 @@ async def test_send_batch_handles_non_retryable_errors(mock_redis_manager):
     # Verify only called once (no retry)
     mock_client.post.assert_called_once()
 
-def test_ms4_batch_sender_handles_empty_queue(ms4_batch_sender, mock_redis_manager):
+def test_ms3_batch_sender_handles_empty_queue(ms3_batch_sender, mock_redis_manager):
     """Tests that the sender correctly handles an empty queue."""
-    mock_redis_manager.get_ms4_outbound_queue_size.return_value = 0
-    mock_redis_manager.dequeue_ms4_batch.return_value = []
+    mock_redis_manager.get_ms3_outbound_queue_size.return_value = 0
+    mock_redis_manager.dequeue_ms3_batch.return_value = []
 
     # Start sender
-    assert ms4_batch_sender.start() is True
-    assert ms4_batch_sender.active is True
-    assert ms4_batch_sender.thread is not None
-    assert ms4_batch_sender.thread.is_alive()
+    assert ms3_batch_sender.start() is True
+    assert ms3_batch_sender.active is True
+    assert ms3_batch_sender.thread is not None
+    assert ms3_batch_sender.thread.is_alive()
     
     # Wait đủ lâu để thread chạy ít nhất 1 iteration
     # fetch_interval = 0.1s, nên 0.5s là đủ cho vài iterations
     time.sleep(0.5)
     
     # Stop sender
-    ms4_batch_sender.stop()
+    ms3_batch_sender.stop()
     
     # Debug: print call count
-    call_count = mock_redis_manager.get_ms4_outbound_queue_size.call_count
-    print(f"\n[DEBUG] get_ms4_outbound_queue_size called {call_count} times")
+    call_count = mock_redis_manager.get_ms3_outbound_queue_size.call_count
+    print(f"\n[DEBUG] get_ms3_outbound_queue_size called {call_count} times")
 
     # Verify it checked the queue
     assert call_count > 0, \
-        f"get_ms4_outbound_queue_size should have been called at least once, but was called {call_count} times"
+        f"get_ms3_outbound_queue_size should have been called at least once, but was called {call_count} times"

@@ -50,12 +50,12 @@ GRAPH_API_INITIAL_BACKOFF_SECONDS = float(os.getenv("GRAPH_API_INITIAL_BACKOFF_S
 GRAPH_API_BACKOFF_FACTOR = float(os.getenv("GRAPH_API_BACKOFF_FACTOR", "2"))
 
 # ============= Downstream Services =============
-MS4_PERSISTENCE_BASE_URL = os.getenv(
-    "MS4_PERSISTENCE_BASE_URL",
+MS3_PERSISTENCE_BASE_URL = os.getenv(
+    "MS3_PERSISTENCE_BASE_URL",
     "http://localhost:8002"
 )
 
-MS4_BATCH_SIZE = int(os.getenv("MS4_BATCH_SIZE", "50"))
+MS3_BATCH_SIZE = int(os.getenv("MS3_BATCH_SIZE", "50"))
 
 # ============= Service Ports =============
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -142,7 +142,7 @@ def print_config():
     print(f"API Port: {API_PORT}")
     print(f"Webhook Port: {WEBHOOK_PORT}")
     print("-" * 70)
-    print(f"MS4 Persistence: {MS4_PERSISTENCE_BASE_URL}")
+    print(f"MS4 Persistence: {MS3_PERSISTENCE_BASE_URL}")
     print("-" * 70)
     print(f"Polling Interval: {DEFAULT_POLLING_INTERVAL}s")
     print(f"Webhook Expiry: {WEBHOOK_SUBSCRIPTION_EXPIRY_DAYS} days")

@@ -14,7 +14,7 @@ from core.session_manager import session_manager
 from utils.config import (
     ATTACH_DIR,
     SPAM_PATTERNS,
-    MS4_PERSISTENCE_BASE_URL
+    MS3_PERSISTENCE_BASE_URL
 )
 
 class EmailProcessor:

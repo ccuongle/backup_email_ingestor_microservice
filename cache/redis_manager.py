@@ -13,7 +13,6 @@ from contextlib import contextmanager
 class RedisStorageManager:
     """
     Centralized Redis storage manager
-    Thay thế tất cả JSON files bằng Redis structures
     """
     # Redis key prefixes
     KEY_PROCESSED = "email:processed"
@@ -28,10 +27,10 @@ class RedisStorageManager:
     KEY_METRICS_PREFIX = "metrics:"
     KEY_COUNTER_PREFIX = "counter:"
     KEY_RATELIMIT_PREFIX = "ratelimit:"
-    KEY_MS4_OUTBOUND_QUEUE = "queue:ms4_outbound"
+    KEY_MS3_OUTBOUND_QUEUE = "queue:ms3_outbound"
     
     # TTL defaults (seconds)
-    TTL_PROCESSED_EMAILS = 30 * 24 * 3600  # 30 days
+    TTL_PROCESSED_EMAILS = 7 * 24 * 3600  # 30 days
     TTL_SESSION = 7 * 24 * 3600  # 7 days
     TTL_LOCK = 30  # 30 seconds
     TTL_RATELIMIT = 3600  # 1 hour
@@ -186,31 +185,31 @@ class RedisStorageManager:
         """Số lượng failed emails"""
         return self.redis.llen(self.KEY_FAILED)
 
-    # ==================== MS4 OUTBOUND QUEUE ====================
+    # ==================== MS3 OUTBOUND QUEUE ====================
 
-    def enqueue_batch_for_ms4(self, batch_payloads: List[Dict[str, Any]]):
+    def enqueue_batch_for_ms3(self, batch_payloads: List[Dict[str, Any]]):
         """
-        Enqueue a batch of processed payloads for MS4.
+        Enqueue a batch of processed payloads for MS3.
         Each item in the list is a JSON string.
         """
         if not batch_payloads:
             return
         # Serialize each payload to a JSON string before pushing to Redis
         serialized_payloads = [json.dumps(p) for p in batch_payloads]
-        self.redis.lpush(self.KEY_MS4_OUTBOUND_QUEUE, *serialized_payloads)
+        self.redis.lpush(self.KEY_MS3_OUTBOUND_QUEUE, *serialized_payloads)
 
-    def get_ms4_outbound_queue_size(self) -> int:
-        """Get the number of payloads in the MS4 outbound queue."""
-        return self.redis.llen(self.KEY_MS4_OUTBOUND_QUEUE)
+    def get_ms3_outbound_queue_size(self) -> int:
+        """Get the number of payloads in the MS3 outbound queue."""
+        return self.redis.llen(self.KEY_MS3_OUTBOUND_QUEUE)
 
-    def dequeue_ms4_batch(self, batch_size: int) -> List[Dict[str, Any]]:
+    def dequeue_ms3_batch(self, batch_size: int) -> List[Dict[str, Any]]:
         """
-        Dequeue a batch of payloads for MS4.
+        Dequeue a batch of payloads for MS3.
         """
         # Use a pipeline to retrieve and trim the list atomically
         pipe = self.redis.pipeline()
-        pipe.lrange(self.KEY_MS4_OUTBOUND_QUEUE, -batch_size, -1)
-        pipe.ltrim(self.KEY_MS4_OUTBOUND_QUEUE, 0, -batch_size - 1)
+        pipe.lrange(self.KEY_MS3_OUTBOUND_QUEUE, -batch_size, -1)
+        pipe.ltrim(self.KEY_MS3_OUTBOUND_QUEUE, 0, -batch_size - 1)
         batch_json, _ = pipe.execute()
         
         if not batch_json:

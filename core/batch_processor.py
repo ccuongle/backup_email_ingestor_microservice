@@ -111,7 +111,7 @@ class BatchEmailProcessor:
         # Flush any remaining payloads
         if self.payload_batch:
             print(f"[BatchProcessor] Enqueuing remaining {len(self.payload_batch)} payloads before shutdown...")
-            self.redis_manager.enqueue_batch_for_ms4(self.payload_batch)
+            self.redis_manager.enqueue_batch_for_ms3(self.payload_batch)
             self.payload_batch.clear()
 
         # Shutdown executor
@@ -182,10 +182,10 @@ class BatchEmailProcessor:
                 print(f"  Payloads accumulated: {len(self.payload_batch)}")
                 print(f"  Rate: {len(batch)/batch_time:.1f} emails/s")
 
-                # If batch is full, enqueue to MS4 outbound queue
+                # If batch is full, enqueue to MS3 outbound queue
                 if len(self.payload_batch) >= self.batch_size:
-                    print(f"[BatchProcessor] Enqueuing batch of {len(self.payload_batch)} payloads to MS4 outbound queue...")
-                    self.redis_manager.enqueue_batch_for_ms4(self.payload_batch)
+                    print(f"[BatchProcessor] Enqueuing batch of {len(self.payload_batch)} payloads to MS3 outbound queue...")
+                    self.redis_manager.enqueue_batch_for_ms3(self.payload_batch)
                     self.payload_batch.clear()
 
                 # Re-queue timeouts periodically
