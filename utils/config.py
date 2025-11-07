@@ -57,6 +57,14 @@ MS3_PERSISTENCE_BASE_URL = os.getenv(
 
 MS3_BATCH_SIZE = int(os.getenv("MS3_BATCH_SIZE", "50"))
 
+# ============= RabbitMQ Settings =============
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
+RABBITMQ_USERNAME = os.getenv("RABBITMQ_USERNAME", "guest")
+RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
+RABBITMQ_VIRTUAL_HOST = os.getenv("RABBITMQ_VIRTUAL_HOST", "/")
+RABBITMQ_QUEUE_NAME = os.getenv("RABBITMQ_QUEUE_NAME", "ms1_email_ingestor_queue")
+
 # ============= Service Ports =============
 API_PORT = int(os.getenv("API_PORT", "8000"))
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8100"))
@@ -97,6 +105,23 @@ ENABLE_ATTACHMENT_SAVE = os.getenv("ENABLE_ATTACHMENT_SAVE", "true").lower() == 
 ENABLE_MS4_FORWARD = os.getenv("ENABLE_MS4_FORWARD", "true").lower() == "true"
 ENABLE_SPAM_FILTER = os.getenv("ENABLE_SPAM_FILTER", "true").lower() == "true"
 
+
+# RabbitMQ Connection Configuration
+RABBITMQ_HOST = os.getenv('RABBITMQ_HOST')
+RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', 5672))
+RABBITMQ_USERNAME = os.getenv('RABBITMQ_USERNAME')
+RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD')
+RABBITMQ_VIRTUAL_HOST = os.getenv('RABBITMQ_VIRTUAL_HOST', '/')
+
+# MS1 Queue Topology (Producer)
+RABBITMQ_EXCHANGE = os.getenv('RABBITMQ_EXCHANGE', 'email_exchange')
+RABBITMQ_ROUTING_KEY = os.getenv('RABBITMQ_ROUTING_KEY', 'email.to.extractor')
+RABBITMQ_QUEUE_NAME = os.getenv('RABBITMQ_QUEUE_NAME', 'queue.for_extraction')
+
+# Service Settings
+SERVICE_NAME = os.getenv('SERVICE_NAME', 'ms1_email_ingestor')
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
 # ============= Validation =============
 def validate_config():
     """Validate configuration"""
@@ -107,7 +132,15 @@ def validate_config():
     
     if not CLIENT_SECRET:
         errors.append("CLIENT_SECRET is required")
+
+    if not RABBITMQ_HOST:
+        errors.append("RABBITMQ_HOST is required")
     
+    if not RABBITMQ_USERNAME:
+        errors.append("RABBITMQ_USERNAME is required")
+        
+    if not RABBITMQ_PASSWORD:
+        errors.append("RABBITMQ_PASSWORD is required")
 
     
     if API_PORT == WEBHOOK_PORT:
@@ -127,37 +160,5 @@ def validate_config():
         raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
 
 # Validate on import
-validate_config()
-
-# ============= Print Configuration (Debug) =============
-def print_config():
-    """Print current configuration (for debugging)"""
-    print("=" * 70)
-    print("EMAIL INGESTION MICROSERVICE - CONFIGURATION")
-    print("=" * 70)
-    print(f"Storage Directory: {STORAGE_DIR}")
-    print(f"Attachments: {ATTACH_DIR}")
-    print(f"Logs: {LOG_DIR}")
-    print("-" * 70)
-    print(f"API Port: {API_PORT}")
-    print(f"Webhook Port: {WEBHOOK_PORT}")
-    print("-" * 70)
-    print(f"MS4 Persistence: {MS3_PERSISTENCE_BASE_URL}")
-    print("-" * 70)
-    print(f"Polling Interval: {DEFAULT_POLLING_INTERVAL}s")
-    print(f"Webhook Expiry: {WEBHOOK_SUBSCRIPTION_EXPIRY_DAYS} days")
-    print(f"Renewal Threshold: {WEBHOOK_RENEWAL_THRESHOLD_HOURS}h")
-    print("-" * 70)
-    print(f"Graph API Rate Limiting:")
-    print(f"  Threshold: {GRAPH_API_RATE_LIMIT_THRESHOLD} requests")
-    print(f"  Window: {GRAPH_API_RATE_LIMIT_WINDOW_SECONDS}s")
-    print(f"  Retry Delay: {GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS}s")
-    print("-" * 70)
-    print(f"Feature Flags:")
-    print(f"  Attachment Save: {ENABLE_ATTACHMENT_SAVE}")
-    print(f"  MS4 Forward: {ENABLE_MS4_FORWARD}")
-    print(f"  Spam Filter: {ENABLE_SPAM_FILTER}")
-    print("=" * 70)
-
 if __name__ == "__main__":
-    print_config()
+    validate_config()

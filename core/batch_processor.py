@@ -5,6 +5,7 @@ Tối ưu hóa I/O operations
 """
 import time
 import threading
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from core.unified_email_processor import EmailProcessor
 from core.session_manager import session_manager
 from core.token_manager import get_token
 from cache.redis_manager import get_redis_storage
+from utils.rabbitmq import RabbitMQConnection
 
 
 class BatchEmailProcessor:
@@ -27,7 +29,8 @@ class BatchEmailProcessor:
     batch_size: int = 50,
     max_workers: int = 20,
     fetch_interval: float = 2.0,
-    email_processor: Optional[EmailProcessor] = None
+    email_processor: Optional[EmailProcessor] = None,
+    rabbitmq_manager: Optional[RabbitMQConnection] = None
 ):
         """
         Args:
@@ -39,18 +42,15 @@ class BatchEmailProcessor:
         self.batch_size = batch_size
         self.max_workers = max_workers
         self.fetch_interval = fetch_interval
-
         self.queue = get_email_queue()
         self.redis_manager = get_redis_storage()
-        self.processor = email_processor  # 👈 Không khởi tạo ngay, chỉ lưu nếu test cung cấp
+        self.processor = email_processor 
+        self.rabbitmq_manager = rabbitmq_manager or RabbitMQConnection()
         self.executor: Optional[ThreadPoolExecutor] = None
 
         self.active = False
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-
-        # Payload accumulation
-        self.payload_batch: List[Dict] = []
 
         # Stats
         self.stats = {
@@ -107,12 +107,6 @@ class BatchEmailProcessor:
         # Wait for thread
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=10)
-
-        # Flush any remaining payloads
-        if self.payload_batch:
-            print(f"[BatchProcessor] Enqueuing remaining {len(self.payload_batch)} payloads before shutdown...")
-            self.redis_manager.enqueue_batch_for_ms3(self.payload_batch)
-            self.payload_batch.clear()
 
         # Shutdown executor
         if self.executor:
@@ -172,21 +166,10 @@ class BatchEmailProcessor:
                     self.stats["batches_processed"]
                 )
 
-                # Accumulate payloads
-                if result["payloads"]:
-                    self.payload_batch.extend(result["payloads"])
-
                 print(f"[BatchProcessor] Batch completed in {batch_time:.2f}s")
                 print(f"  Success: {result['success']}")
                 print(f"  Failed: {result['failed']}")
-                print(f"  Payloads accumulated: {len(self.payload_batch)}")
                 print(f"  Rate: {len(batch)/batch_time:.1f} emails/s")
-
-                # If batch is full, enqueue to MS3 outbound queue
-                if len(self.payload_batch) >= self.batch_size:
-                    print(f"[BatchProcessor] Enqueuing batch of {len(self.payload_batch)} payloads to MS3 outbound queue...")
-                    self.redis_manager.enqueue_batch_for_ms3(self.payload_batch)
-                    self.payload_batch.clear()
 
                 # Re-queue timeouts periodically
                 if self.stats["batches_processed"] % 10 == 0:
@@ -209,9 +192,9 @@ class BatchEmailProcessor:
             batch: List of (email_id, email_data)
         
         Returns:
-            {"success": int, "failed": int, "payloads": List[Dict]}
+            {"success": int, "failed": int}
         """
-        result = {"success": 0, "failed": 0, "payloads": []}
+        result = {"success": 0, "failed": 0}
         if not self.executor:
             # Fallback initialization, should be done in start()
             self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
@@ -230,13 +213,15 @@ class BatchEmailProcessor:
                 
                 if payload:
                     result["success"] += 1
-                    result["payloads"].append(payload)
+                    self.rabbitmq_manager.publish('email_exchange', 'extracted_data', json.dumps(payload))
                     processed_ids.append(email_id)
                 else:
                     result["failed"] += 1
                     self.queue.mark_failed(email_id, "Processing failed or returned no payload")
             
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 result["failed"] += 1
                 self.queue.mark_failed(email_id, str(e))
                 print(f"[BatchProcessor] Error processing {email_id}: {e}")

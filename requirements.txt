@@ -17,3 +17,8 @@ pytest-asyncio
 pytest-timeout 
 pytest-cov
 respx
+pika
+python-dotenv
+testcontainers
+pytest-testcontainers
+requests       

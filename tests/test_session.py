@@ -477,10 +477,9 @@ class TestBatchProcessing:
                 "hasAttachments": False
             }, None)
         ]
-        
+
         enqueued = email_queue.enqueue_batch(emails)
-        assert len(enqueued) == 2
-        
+        assert len(enqueued) == 2        
         print("✅ Setup: 2 emails enqueued")
         
         # Mock MS2 and MS4 endpoints
