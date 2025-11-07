@@ -3,7 +3,6 @@ Webhook Service
 Xử lý email theo cơ chế webhook với ngrok tunnel riêng biệt
 """
 import asyncio
-import json
 import httpx
 import threading
 from datetime import datetime, timezone, timedelta
@@ -11,7 +10,7 @@ from typing import Optional, Dict
 from pyngrok import ngrok
 import psutil
 import time
-from core.session_manager import session_manager, SessionState
+from core.session_manager import session_manager
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
 from cache.redis_manager import get_redis_storage
@@ -77,7 +76,7 @@ class WebhookService:
     async def start(self) -> bool:
         """Khởi động webhook service"""
         if self.active:
-            print(f"[WebhookService] Already active")
+            print("[WebhookService] Already active")
             return False
         
         try:
@@ -108,7 +107,7 @@ class WebhookService:
             self.active = True
             self.error_count = 0
             
-            print(f"[WebhookService] Started successfully")
+            print("[WebhookService] Started successfully")
             return True
         
         except Exception as e:
@@ -121,7 +120,7 @@ class WebhookService:
         if not self.active:
             return
         
-        print(f"[WebhookService] Stopping...")
+        print("[WebhookService] Stopping...")
         
         # Delete subscription
         if self.subscription_id:
@@ -138,7 +137,7 @@ class WebhookService:
             self.ngrok_tunnel = None
         
         self.active = False
-        print(f"[WebhookService] Stopped")
+        print("[WebhookService] Stopped")
     
     async def handle_notification(self, notification_data: Dict) -> Dict:
         """Xử lý notification từ Microsoft Graph"""
@@ -290,7 +289,7 @@ class WebhookService:
             try:
                 if proc.info['name'] and "ngrok" in proc.info['name'].lower():
                     proc.kill()
-            except:
+            except Exception:
                 pass
     
     def _kill_port_process(self, port: int):
@@ -303,7 +302,7 @@ class WebhookService:
                         proc.kill()
                         time.sleep(2)
                         break
-            except:
+            except Exception:
                 pass
     
     def _start_fastapi_server(self):
@@ -381,7 +380,7 @@ class WebhookService:
                     headers=headers,
                     timeout=10
                         )            
-                print(f"[WebhookService] Subscription deleted")
+                print("[WebhookService] Subscription deleted")
         except httpx.RequestError as e:
             print(f"[WebhookService] Delete subscription error: {e}")
     
@@ -442,7 +441,7 @@ class WebhookService:
                         )
                     
                     if resp.status_code != 200:
-                        print(f"[WebhookService] Subscription not found, recreating...")
+                        print("[WebhookService] Subscription not found, recreating...")
                         self.subscription_id = await self._create_subscription()
                         continue
                     

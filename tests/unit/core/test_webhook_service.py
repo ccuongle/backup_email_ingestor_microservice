@@ -1,6 +1,6 @@
 
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 from core.webhook_service import WebhookService
 
 @pytest.fixture

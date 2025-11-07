@@ -4,10 +4,8 @@ Tests polling, hybrid ingestion, and fallback scenarios
 """
 import pytest
 import time
-import json
-from datetime import datetime, timezone, timedelta
-from unittest.mock import Mock, patch, MagicMock, AsyncMock
-from typing import List, Dict
+from datetime import datetime, timezone
+from unittest.mock import patch, MagicMock, AsyncMock
 import httpx
 
 # Import components to test

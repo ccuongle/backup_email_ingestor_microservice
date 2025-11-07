@@ -7,14 +7,11 @@ import json
 import os
 import base64
 import httpx
-from httpx import Client
 from typing import List, Dict, Optional
-from datetime import datetime, timezone
 from core.session_manager import session_manager
 from utils.config import (
     ATTACH_DIR,
-    SPAM_PATTERNS,
-    MS3_PERSISTENCE_BASE_URL
+    SPAM_PATTERNS
 )
 
 class EmailProcessor:
@@ -30,7 +27,7 @@ class EmailProcessor:
         """Xử lý một email và trả về metadata nếu thành công."""
         msg_id = message.get("id")
         if not msg_id:
-            print(f"[EmailProcessor] Missing message ID")
+            print("[EmailProcessor] Missing message ID")
             return None
 
         if session_manager.is_email_processed(msg_id):
@@ -46,7 +43,7 @@ class EmailProcessor:
 
         try:
             if self._is_spam(sender):
-                print(f"[EmailProcessor] SPAM detected, moving to junk")
+                print("[EmailProcessor] SPAM detected, moving to junk")
                 self._move_to_junk(msg_id)
                 session_manager.register_processed_email(msg_id)
                 return None  # Spam emails don't produce metadata

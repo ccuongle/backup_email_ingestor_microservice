@@ -4,7 +4,6 @@ High-performance queue system với Redis backing
 Hỗ trợ priority queue và batch processing
 """
 import json
-import time
 from typing import List, Dict, Optional
 from datetime import datetime, timezone
 from cache.redis_manager import get_redis_storage
@@ -316,7 +315,7 @@ class EmailQueue:
                 email_ids
             )
             return [bool(r) for r in results]
-        except:
+        except Exception:
             # Fallback for older Redis
             pipeline = self.redis.redis.pipeline()
             for email_id in email_ids:

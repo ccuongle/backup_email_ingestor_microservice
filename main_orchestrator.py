@@ -70,7 +70,7 @@ class EmailIngestionOrchestrator:
         print("-" * 70)
         print(f"Batch Size: {batch_size} emails")
         print(f"Parallel Workers: {max_workers}")
-        print(f"Architecture: Polling/Webhook → Queue → Batch Processor")
+        print("Architecture: Polling/Webhook → Queue → Batch Processor")
         print("=" * 70)
         
         try:

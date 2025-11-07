@@ -1,8 +1,5 @@
 import os 
 from dotenv import load_dotenv
-import requests, datetime, json
-from datetime import datetime, timedelta, UTC
-import msal 
 from msal import ConfidentialClientApplication
 from cache.redis_manager import get_redis_storage, RedisStorageManager
 load_dotenv()

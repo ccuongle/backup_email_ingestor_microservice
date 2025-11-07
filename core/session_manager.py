@@ -2,13 +2,10 @@
 Session Manager - Core component for managing work sessions
 Handles state transitions between polling and webhook modes
 """
-import json
-import os
-import threading
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional, Dict, Set
-from dataclasses import dataclass, asdict
+from typing import Optional, Dict
+from dataclasses import dataclass
 from cache.redis_manager import get_redis_storage
 
 class SessionState(Enum):
@@ -80,9 +77,9 @@ class SessionManager:
         
         # Hiển thị mode phù hợp
         if config.webhook_enabled:
-            print(f"[SessionManager] Mode: BOTH_ACTIVE (Polling + Webhook)")
+            print("[SessionManager] Mode: BOTH_ACTIVE (Polling + Webhook)")
         else:
-            print(f"[SessionManager] Mode: POLLING_ACTIVE (Polling only)")
+            print("[SessionManager] Mode: POLLING_ACTIVE (Polling only)")
         
         return True
     
@@ -97,8 +94,8 @@ class SessionManager:
         self.redis.update_session_field("state", self.state.value)
         self.redis.update_session_field("timestamp", datetime.now(timezone.utc).isoformat())
         
-        print(f"[SessionManager] Initial polling completed")
-        print(f"[SessionManager] Mode: WEBHOOK_ACTIVE (Webhook only)")
+        print("[SessionManager] Initial polling completed")
+        print("[SessionManager] Mode: WEBHOOK_ACTIVE (Webhook only)")
         return True
     
     def activate_fallback_polling(self, reason: str) -> bool:
@@ -134,7 +131,7 @@ class SessionManager:
             self.redis.update_session_field("webhook_errors", "0")
             self.redis.update_session_field("timestamp", datetime.now(timezone.utc).isoformat())
             
-            print(f"[SessionManager] Webhook restored, polling deactivated")
+            print("[SessionManager] Webhook restored, polling deactivated")
             return True
         
         return False

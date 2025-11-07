@@ -1,5 +1,4 @@
 import pika
-import os
 import logging
 from . import config
 
@@ -63,7 +62,7 @@ class RabbitMQConnection:
         try:
             self.channel.queue_declare(queue=queue_name, passive=True)
             logger.info(f"Queue '{queue_name}' exists and is accessible.")
-        except pika.exceptions.ChannelClosedByBroker as e:
+        except pika.exceptions.ChannelClosedByBroker:
             logger.error(f"Queue '{queue_name}' does not exist. Must be created by Queue Orchestrator.")
             raise
 

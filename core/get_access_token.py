@@ -1,6 +1,3 @@
-import json
-import os
-import msal 
 from msal import ConfidentialClientApplication
 from utils.config import CLIENT_ID, CLIENT_SECRET, SCOPES
 from cache.redis_manager import get_redis_storage, RedisStorageManager

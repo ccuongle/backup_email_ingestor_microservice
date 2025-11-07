@@ -6,7 +6,6 @@ import time
 import threading
 import httpx
 from typing import List, Dict, Optional
-from datetime import datetime, timezone
 from utils.config import (
     MAX_POLL_PAGES as max_pages,
     GRAPH_API_RATE_LIMIT_THRESHOLD,
@@ -16,7 +15,7 @@ from utils.config import (
     GRAPH_API_INITIAL_BACKOFF_SECONDS,
     GRAPH_API_BACKOFF_FACTOR
 )
-from core.session_manager import session_manager, SessionState, TriggerMode
+from core.session_manager import session_manager, TriggerMode
 from core.queue_manager import get_email_queue
 from core.token_manager import get_token
 from cache.redis_manager import get_redis_storage
@@ -65,7 +64,7 @@ class PollingService:
         if not self.active:
             return
         
-        print(f"[PollingService] Stopping...")
+        print("[PollingService] Stopping...")
         self.active = False
         self._stop_event.set()
         
@@ -73,7 +72,7 @@ class PollingService:
             threading.current_thread() != self.thread):
             self.thread.join(timeout=5)
         
-        print(f"[PollingService] Stopped")
+        print("[PollingService] Stopped")
 
 # Adding throttle proof:
     
@@ -111,7 +110,7 @@ class PollingService:
         Processing sẽ do BatchProcessor đảm nhận
         """
         try:
-            print(f"[PollingService] Fetching unread emails...")
+            print("[PollingService] Fetching unread emails...")
             start_time = time.time()
             
             # Fetch emails
@@ -119,7 +118,7 @@ class PollingService:
             fetch_time = time.time() - start_time
             
             if not messages:
-                print(f"[PollingService] No unread emails found")
+                print("[PollingService] No unread emails found")
                 return {
                     "status": "success",
                     "emails_found": 0,
@@ -180,12 +179,10 @@ class PollingService:
     
     def _polling_loop(self):
         """Background loop cho scheduled/fallback polling"""
-        print(f"[PollingService] Background polling started")
+        print("[PollingService] Background polling started")
                 
         while self.active and not self._stop_event.is_set():
             try:
-                session_status = session_manager.get_session_status()
-                current_state = SessionState(session_status["state"])
                 
                 # Vòng lặp này chỉ dành cho FALLBACK mode
                 if self.mode != TriggerMode.FALLBACK:
@@ -194,7 +191,7 @@ class PollingService:
                     continue
                 
                 # Poll
-                print(f"[PollingService] Fallback poll running...")
+                print("[PollingService] Fallback poll running...")
                 self.poll_once()
                 
                 # Wait before next poll
@@ -205,7 +202,7 @@ class PollingService:
                 print(f"[PollingService] Loop error: {e}")
                 time.sleep(30)
         
-        print(f"[PollingService] Background polling stopped")
+        print("[PollingService] Background polling stopped")
     
     @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
     async def _fetch_unread_emails(self, max_results: int = 100) -> List[Dict]:

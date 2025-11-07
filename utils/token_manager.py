@@ -1,7 +1,6 @@
 """
 Async token management
 """
-import os
 from msal import ConfidentialClientApplication
 from cache.redis_manager import get_redis_storage
 from utils.config import settings

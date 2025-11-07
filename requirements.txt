@@ -21,4 +21,5 @@ pika
 python-dotenv
 testcontainers
 pytest-testcontainers
-requests       
+requests
+testcontainers[rabbitmq]

@@ -8,11 +8,9 @@ import threading
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional
-from datetime import datetime, timezone
 
 from core.queue_manager import get_email_queue
 from core.unified_email_processor import EmailProcessor
-from core.session_manager import session_manager
 from core.token_manager import get_token
 from cache.redis_manager import get_redis_storage
 from utils.rabbitmq import RabbitMQConnection
@@ -67,7 +65,7 @@ class BatchEmailProcessor:
             print("[BatchProcessor] Already active")
             return False
         
-        print(f"[BatchProcessor] Starting...")
+        print("[BatchProcessor] Starting...")
         print(f"  Batch size: {self.batch_size}")
         print(f"  Workers: {self.max_workers}")
         print(f"  Fetch interval: {self.fetch_interval}s")
