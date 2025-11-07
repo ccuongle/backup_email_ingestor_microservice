@@ -77,15 +77,19 @@ class RabbitMQConnection:
         """
         if not self.channel:
             self.connect()
-        self.channel.basic_publish(
-            exchange=exchange,
-            routing_key=routing_key,
-            body=body,
-            properties=pika.BasicProperties(
-                delivery_mode=2,  # make message persistent
+        try:
+            self.channel.basic_publish(
+                exchange=exchange,
+                routing_key=routing_key,
+                body=body,
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # make message persistent
+                )
             )
-        )
-        logger.info(f"Message published to exchange '{exchange}' with routing key '{routing_key}'.")
+            logger.info(f"Message published to exchange '{exchange}' with routing key '{routing_key}'.")
+        except pika.exceptions.AMQPChannelError as e:
+            logger.error(f"Failed to publish message to exchange '{exchange}' with routing key '{routing_key}': {e}")
+            raise
 
     def consume(self, queue_name: str, callback):
         """
@@ -102,9 +106,16 @@ class RabbitMQConnection:
         # Verify queue exists (passive check only)
         self.ensure_queue_exists(queue_name)
         
+        def safe_callback(ch, method, properties, body):
+            try:
+                callback(ch, method, properties, body)
+            except Exception as e:
+                logger.error(f"Error processing message: {e}. Nacking message {method.delivery_tag}")
+                self.nack_message(method.delivery_tag)
+
         self.channel.basic_consume(
             queue=queue_name, 
-            on_message_callback=callback, 
+            on_message_callback=safe_callback, 
             auto_ack=False
         )
         logger.info(f"Started consuming from queue '{queue_name}'. Waiting for messages...")
