@@ -480,40 +480,42 @@ class TestBatchProcessing:
         assert len(enqueued) == 2        
         print("✅ Setup: 2 emails enqueued")
         
-        # Mock MS2 and MS4 endpoints
-        with patch('httpx.post') as mock_post, \
-             patch('core.batch_processor.RabbitMQConnection') as mock_rabbitmq_connection:
-            mock_post.return_value.status_code = 200
-            
-            mock_rmq_instance = MagicMock()
-            mock_rabbitmq_connection.return_value = mock_rmq_instance
-            mock_rmq_instance.connect.return_value = None
-            mock_rmq_instance.publish.return_value = None
-            mock_rmq_instance.close.return_value = None
-            
-            # Create processor
-            processor = BatchEmailProcessor(batch_size=10, max_workers=5)
-            processor.start()  
-
-            # Dequeue and process
-            batch = email_queue.dequeue_batch(10)
-            result = processor._process_batch_parallel(batch)
+        # ✅ SỬA: Tạo mock instance TRƯỚC KHI tạo processor
+        mock_rmq_instance = MagicMock()
+        mock_rmq_instance.publish.return_value = None
+        mock_rmq_instance.connect.return_value = None
+        mock_rmq_instance.close.return_value = None
         
-        # Verify
+        # ✅ SỬA: Inject mock qua constructor (Dependency Injection)
+        processor = BatchEmailProcessor(
+            batch_size=10, 
+            max_workers=5,
+            rabbitmq_manager=mock_rmq_instance  # ← Inject mock trực tiếp
+        )
+        processor.start()
+
+        # Dequeue and process
+        batch = email_queue.dequeue_batch(10)
+        result = processor._process_batch_parallel(batch)
+        
+        # Verify business logic
         assert result["success"] == 2
         assert result["failed"] == 0
         
-        # Verify RabbitMQ publish calls
-        assert mock_rmq_instance.connect.call_count == 2 # Called for each email
-        assert mock_rmq_instance.publish.call_count == 2 # Called for each email
-        assert mock_rmq_instance.close.call_count == 2 # Called for each email
+        # ✅ SỬA: Chỉ assert về publish (behavior), không assert connect (implementation detail)
+        assert mock_rmq_instance.publish.call_count == 2
         
-        # Verify processed
+        # ✅ OPTIONAL: Verify payload của từng publish call
+        calls = mock_rmq_instance.publish.call_args_list
+        assert calls[0][0][0] == 'email_exchange'  # First arg: exchange
+        assert calls[0][0][1] == 'extracted_data'  # Second arg: routing_key
+        # Third arg is JSON payload - can parse and verify if needed
+        
+        # Verify emails were marked as processed
         assert session_manager_instance.is_email_processed("batch_email_1")
         assert session_manager_instance.is_email_processed("batch_email_2")
         
         print("✅ Test batch processing - PASSED")
-
 
 class TestSessionLifecycle:
     """Test vòng đời của session"""

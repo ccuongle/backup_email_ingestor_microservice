@@ -13,6 +13,7 @@ from utils.config import (
     ATTACH_DIR,
     SPAM_PATTERNS
 )
+from utils.rabbitmq import RabbitMQConnection
 
 class EmailProcessor:
     """Core processor xử lý email"""
@@ -21,6 +22,14 @@ class EmailProcessor:
         self.token = token
         self.headers = {"Authorization": f"Bearer {token}"}
         self.client = httpx.Client(headers=self.headers, timeout=10)
+        self.rabbitmq_connection = RabbitMQConnection()
+        self.rabbitmq_connection.declare_exchange(exchange_name="email_exchange", exchange_type="topic", durable=True)
+        self.rabbitmq_connection.declare_queue(queue_name="queue.for_extraction", durable=True)
+        self.rabbitmq_connection.bind_queue_to_exchange(
+            queue_name="queue.for_extraction",
+            exchange_name="email_exchange",
+            routing_key="queue.for_extraction"
+        )
         os.makedirs(ATTACH_DIR, exist_ok=True)
     
     def process_email(self, message: Dict, source: str = "unknown") -> Optional[Dict]:
@@ -54,6 +63,13 @@ class EmailProcessor:
             metadata = self._prepare_persistence_payload(message)
             
             session_manager.register_processed_email(msg_id)
+            
+            # Publish metadata to RabbitMQ
+            self.rabbitmq_connection.publish(
+                exchange="email_exchange",
+                routing_key="queue.for_extraction",
+                message=metadata
+            )
             
             print(f"[EmailProcessor] [{source}] Successfully processed: {msg_id}")
             return metadata
@@ -131,13 +147,22 @@ class EmailProcessor:
     
     def _prepare_persistence_payload(self, message: Dict) -> Dict:
         """Chuẩn bị metadata để gửi đến MS4 Persistence."""
+        sender_address = message.get("from", {}).get("emailAddress", {}).get("address", "")
+        recipient_address = message.get("toRecipients", [{}])[0].get("emailAddress", {}).get("address", "")
+        attachment_name = None
+        if message.get("hasAttachments", False):
+            # This is a simplification. In a real scenario, we might need to fetch attachment details.
+            # For now, we'll just indicate if attachments exist.
+            attachment_name = "attachments_exist" 
+
         metadata = {
-            "id": message.get("id"),
+            "email_id": message.get("id"),
+            "sender": sender_address,
+            "recipient": recipient_address,
             "subject": message.get("subject"),
-            "hasAttachments": message.get("hasAttachments", False),
-            "sender": message.get("from", {}).get("emailAddress", {}).get("address", ""),
-            "receivedDateTime": message.get("receivedDateTime"),
-            "raw_message": json.dumps(message)
+            "received_date": message.get("receivedDateTime"),
+            "attachment_name": attachment_name,
+            "status": "processed"
         }
         return metadata
     
