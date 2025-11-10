@@ -4,29 +4,24 @@ from ms1_email_ingestor.core.unified_email_processor import EmailProcessor
 from ms1_email_ingestor.core.session_manager import session_manager
 from utils.rabbitmq import RabbitMQConnection
 
-@pytest.fixture
-def mock_rabbitmq_connection():
-    with patch('utils.rabbitmq.RabbitMQConnection') as mock_rabbitmq_class:
-        # Configure the mock instance that RabbitMQConnection() will return
-        mock_instance = MagicMock(spec=RabbitMQConnection)
-        
-        # Mock the _channel attribute and its methods
-        mock_instance._channel = MagicMock()
-        mock_instance._channel.queue_declare.return_value = None
-        mock_instance._channel.exchange_declare.return_value = None
-        mock_instance._channel.queue_bind.return_value = None
-        mock_instance._channel.basic_publish.return_value = None
-        
-        # Make the mock class return our configured mock instance
-        mock_rabbitmq_class.return_value = mock_instance
-        
-        yield mock_instance
+
 
 @pytest.fixture
-def email_processor_instance(mock_rabbitmq_connection):
-    processor = EmailProcessor(token="test_token")
-    yield processor
-    processor.close()
+def email_processor_instance():
+    with patch('ms1_email_ingestor.core.unified_email_processor.RabbitMQConnection') as MockRabbitMQConnection:
+        mock_rabbitmq_instance = MagicMock(spec=RabbitMQConnection)
+        MockRabbitMQConnection.return_value = mock_rabbitmq_instance
+        
+        processor = EmailProcessor(token="test_token")
+        
+        # Configure the mock instance methods
+        mock_rabbitmq_instance.declare_exchange.return_value = None
+        mock_rabbitmq_instance.declare_queue.return_value = None
+        mock_rabbitmq_instance.bind_queue_to_exchange.return_value = None
+        mock_rabbitmq_instance.publish.return_value = None
+        
+        yield processor
+        processor.close()
 
 @pytest.fixture(autouse=True)
 def clear_session_manager():
