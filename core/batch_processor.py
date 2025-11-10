@@ -71,8 +71,11 @@ class BatchEmailProcessor:
         print(f"  Fetch interval: {self.fetch_interval}s")
         
         # Initialize processor
-        token = get_token()
-        self.processor = EmailProcessor(token)
+        # token = get_token()
+        # self.processor = EmailProcessor(token)
+        if self.processor is None:
+            token = get_token()
+            self.processor = EmailProcessor(token)
         
         # Initialize executor
         self.executor = ThreadPoolExecutor(

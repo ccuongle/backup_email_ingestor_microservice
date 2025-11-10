@@ -207,7 +207,7 @@ class EmailQueue:
     def mark_processed(self, email_ids: List[str]):
         """
         Mark emails as processed (batch)
-        Remove from processing set
+        Remove from processing set and register with session manager
         """
         if not email_ids:
             return
@@ -223,6 +223,11 @@ class EmailQueue:
             pipeline.delete(data_key)
         
         pipeline.execute()
+    
+        # ✅ NEW: Register with session manager
+        from core.session_manager import session_manager
+        for email_id in email_ids:
+            session_manager.register_processed_email(email_id)
     
     def mark_failed(self, email_id: str, error: str):
         """

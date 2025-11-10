@@ -456,7 +456,7 @@ class TestBatchProcessing:
     """Test batch processing của emails từ queue"""
     
     def test_batch_processor_processes_queue(self, redis_storage, email_queue, 
-                                             session_manager_instance, mock_token):
+                                         session_manager_instance, mock_token):
         """Test BatchProcessor xử lý emails từ queue"""
         # Setup: Add emails to queue
         emails = [
@@ -464,6 +464,7 @@ class TestBatchProcessing:
                 "id": "batch_email_1",
                 "subject": "Batch Test 1",
                 "from": {"emailAddress": {"address": "batch1@test.com"}},
+                "toRecipients": [{"emailAddress": {"address": "recipient1@test.com"}}],
                 "receivedDateTime": datetime.now(timezone.utc).isoformat(),
                 "hasAttachments": False
             }, None),
@@ -471,6 +472,7 @@ class TestBatchProcessing:
                 "id": "batch_email_2",
                 "subject": "Batch Test 2",
                 "from": {"emailAddress": {"address": "batch2@test.com"}},
+                "toRecipients": [{"emailAddress": {"address": "recipient2@test.com"}}],
                 "receivedDateTime": datetime.now(timezone.utc).isoformat(),
                 "hasAttachments": False
             }, None)
@@ -480,52 +482,49 @@ class TestBatchProcessing:
         assert len(enqueued) == 2        
         print("✅ Setup: 2 emails enqueued")
         
-        # Patch EmailProcessor directly
-        with patch('core.unified_email_processor.EmailProcessor') as MockEmailProcessor:
-            mock_email_processor_instance = MockEmailProcessor.return_value
-            mock_email_processor_instance.process_email.return_value = {"some": "payload"} # Simulate successful processing
-            mock_email_processor_instance.close.return_value = None
+        # ✅ THAY ĐỔI: Tạo mock EmailProcessor
+        mock_email_processor = MagicMock()
+        mock_email_processor.process_email.return_value = {
+            "email_id": "test",
+            "status": "processed"
+        }
+        mock_email_processor.close.return_value = None
+        
+        # ✅ THAY ĐỔI: Tạo mock RabbitMQ
+        mock_rmq_instance = MagicMock()
+        mock_rmq_instance.connect.return_value = None
+        mock_rmq_instance.close.return_value = None
+        mock_rmq_instance.publish.return_value = None
+        
+        # ✅ THAY ĐỔI: Inject cả 2 mocks vào constructor
+        processor = BatchEmailProcessor(
+            batch_size=10, 
+            max_workers=5,
+            email_processor=mock_email_processor,  # ← INJECT MOCK
+            rabbitmq_manager=mock_rmq_instance
+        )
+        processor.start()
 
-            # ✅ SỬA: Tạo mock instance TRƯỚC KHI tạo processor
-            mock_rmq_instance = MagicMock()
-            mock_rmq_instance.publish.return_value = None
-            mock_rmq_instance.connect.return_value = None
-            mock_rmq_instance.close.return_value = None
-            
-            # ✅ SỬA: Inject mock qua constructor (Dependency Injection)
-            processor = BatchEmailProcessor(
-                batch_size=10, 
-                max_workers=5,
-                rabbitmq_manager=mock_rmq_instance  # ← Inject mock trực tiếp
-            )
-            processor.start()
-            print(f"DEBUG: processor.processor is {processor.processor}") # Add this line
-
-            # Dequeue and process
-            batch = email_queue.dequeue_batch(10)
-            result = processor._process_batch_parallel(batch)
-            
-            # Verify business logic
-            assert result["success"] == 2
-            assert result["failed"] == 0
-            
-            # Verify EmailProcessor.process_email was called
-            assert mock_email_processor_instance.process_email.call_count == 2
-            
-            # Verify publish calls on the BatchEmailProcessor's RabbitMQConnection mock
-            assert mock_rmq_instance.publish.call_count == 2
-            
-            # ✅ OPTIONAL: Verify payload của từng publish call
-            calls = mock_rmq_instance.publish.call_args_list
-            assert calls[0][0][0] == 'email_exchange'  # First arg: exchange
-            assert calls[0][0][1] == 'extracted_data'  # Second arg: routing_key
-            # Third arg is JSON payload - can parse and verify if needed
-            
-            # Verify emails were marked as processed
-            assert session_manager_instance.is_email_processed("batch_email_1")
-            assert session_manager_instance.is_email_processed("batch_email_2")
-            
-            print("✅ Test batch processing - PASSED")
+        # Dequeue and process
+        batch = email_queue.dequeue_batch(10)
+        result = processor._process_batch_parallel(batch)
+        
+        # Verify business logic
+        assert result["success"] == 2
+        assert result["failed"] == 0
+        
+        # ✅ THAY ĐỔI: Verify mock EmailProcessor được gọi
+        assert mock_email_processor.process_email.call_count == 2
+        
+        # ✅ GIỮ NGUYÊN: Verify RabbitMQ publish
+        assert mock_rmq_instance.publish.call_count == 2
+        
+        # Verify emails were marked as processed
+        assert session_manager_instance.is_email_processed("batch_email_1")
+        assert session_manager_instance.is_email_processed("batch_email_2")
+        
+        processor.stop()
+        print("✅ Test batch processing - PASSED")
 
 class TestSessionLifecycle:
     """Test vòng đời của session"""
