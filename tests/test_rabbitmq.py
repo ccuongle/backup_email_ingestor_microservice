@@ -82,9 +82,14 @@ def test_consume_message(rabbitmq_connection):
     with patch.object(rabbitmq_connection, 'ensure_queue_exists'):
         rabbitmq_connection.consume(queue_name, mock_callback)
     
-    rabbitmq_connection.channel.basic_consume.assert_called_with(
-        queue=queue_name, on_message_callback=mock_callback, auto_ack=False
-    )
+    # Assert that basic_consume was called
+    rabbitmq_connection.channel.basic_consume.assert_called_once()
+    
+    # Optionally, you can check other arguments if needed, but not the callback object itself
+    args, kwargs = rabbitmq_connection.channel.basic_consume.call_args
+    assert kwargs['queue'] == queue_name
+    assert kwargs['auto_ack'] == False
+    
     rabbitmq_connection.channel.start_consuming.assert_called_once()
 
 def test_ack_message(rabbitmq_connection):

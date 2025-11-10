@@ -481,8 +481,15 @@ class TestBatchProcessing:
         print("✅ Setup: 2 emails enqueued")
         
         # Mock MS2 and MS4 endpoints
-        with patch('httpx.post') as mock_post:
+        with patch('httpx.post') as mock_post, \
+             patch('core.batch_processor.RabbitMQConnection') as mock_rabbitmq_connection:
             mock_post.return_value.status_code = 200
+            
+            mock_rmq_instance = MagicMock()
+            mock_rabbitmq_connection.return_value = mock_rmq_instance
+            mock_rmq_instance.connect.return_value = None
+            mock_rmq_instance.publish.return_value = None
+            mock_rmq_instance.close.return_value = None
             
             # Create processor
             processor = BatchEmailProcessor(batch_size=10, max_workers=5)
@@ -495,6 +502,11 @@ class TestBatchProcessing:
         # Verify
         assert result["success"] == 2
         assert result["failed"] == 0
+        
+        # Verify RabbitMQ publish calls
+        assert mock_rmq_instance.connect.call_count == 2 # Called for each email
+        assert mock_rmq_instance.publish.call_count == 2 # Called for each email
+        assert mock_rmq_instance.close.call_count == 2 # Called for each email
         
         # Verify processed
         assert session_manager_instance.is_email_processed("batch_email_1")

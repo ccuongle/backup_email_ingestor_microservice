@@ -160,5 +160,5 @@ def validate_config():
         raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
 
 # Validate on import
-if __name__ == "__main__":
-    validate_config()
+# if __name__ == "__main__":
+#     validate_config()
