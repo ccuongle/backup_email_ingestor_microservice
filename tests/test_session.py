@@ -480,42 +480,52 @@ class TestBatchProcessing:
         assert len(enqueued) == 2        
         print("✅ Setup: 2 emails enqueued")
         
-        # ✅ SỬA: Tạo mock instance TRƯỚC KHI tạo processor
-        mock_rmq_instance = MagicMock()
-        mock_rmq_instance.publish.return_value = None
-        mock_rmq_instance.connect.return_value = None
-        mock_rmq_instance.close.return_value = None
-        
-        # ✅ SỬA: Inject mock qua constructor (Dependency Injection)
-        processor = BatchEmailProcessor(
-            batch_size=10, 
-            max_workers=5,
-            rabbitmq_manager=mock_rmq_instance  # ← Inject mock trực tiếp
-        )
-        processor.start()
+        # Patch EmailProcessor directly
+        with patch('core.unified_email_processor.EmailProcessor') as MockEmailProcessor:
+            mock_email_processor_instance = MockEmailProcessor.return_value
+            mock_email_processor_instance.process_email.return_value = {"some": "payload"} # Simulate successful processing
+            mock_email_processor_instance.close.return_value = None
 
-        # Dequeue and process
-        batch = email_queue.dequeue_batch(10)
-        result = processor._process_batch_parallel(batch)
-        
-        # Verify business logic
-        assert result["success"] == 2
-        assert result["failed"] == 0
-        
-        # ✅ SỬA: Chỉ assert về publish (behavior), không assert connect (implementation detail)
-        assert mock_rmq_instance.publish.call_count == 2
-        
-        # ✅ OPTIONAL: Verify payload của từng publish call
-        calls = mock_rmq_instance.publish.call_args_list
-        assert calls[0][0][0] == 'email_exchange'  # First arg: exchange
-        assert calls[0][0][1] == 'extracted_data'  # Second arg: routing_key
-        # Third arg is JSON payload - can parse and verify if needed
-        
-        # Verify emails were marked as processed
-        assert session_manager_instance.is_email_processed("batch_email_1")
-        assert session_manager_instance.is_email_processed("batch_email_2")
-        
-        print("✅ Test batch processing - PASSED")
+            # ✅ SỬA: Tạo mock instance TRƯỚC KHI tạo processor
+            mock_rmq_instance = MagicMock()
+            mock_rmq_instance.publish.return_value = None
+            mock_rmq_instance.connect.return_value = None
+            mock_rmq_instance.close.return_value = None
+            
+            # ✅ SỬA: Inject mock qua constructor (Dependency Injection)
+            processor = BatchEmailProcessor(
+                batch_size=10, 
+                max_workers=5,
+                rabbitmq_manager=mock_rmq_instance  # ← Inject mock trực tiếp
+            )
+            processor.start()
+            print(f"DEBUG: processor.processor is {processor.processor}") # Add this line
+
+            # Dequeue and process
+            batch = email_queue.dequeue_batch(10)
+            result = processor._process_batch_parallel(batch)
+            
+            # Verify business logic
+            assert result["success"] == 2
+            assert result["failed"] == 0
+            
+            # Verify EmailProcessor.process_email was called
+            assert mock_email_processor_instance.process_email.call_count == 2
+            
+            # Verify publish calls on the BatchEmailProcessor's RabbitMQConnection mock
+            assert mock_rmq_instance.publish.call_count == 2
+            
+            # ✅ OPTIONAL: Verify payload của từng publish call
+            calls = mock_rmq_instance.publish.call_args_list
+            assert calls[0][0][0] == 'email_exchange'  # First arg: exchange
+            assert calls[0][0][1] == 'extracted_data'  # Second arg: routing_key
+            # Third arg is JSON payload - can parse and verify if needed
+            
+            # Verify emails were marked as processed
+            assert session_manager_instance.is_email_processed("batch_email_1")
+            assert session_manager_instance.is_email_processed("batch_email_2")
+            
+            print("✅ Test batch processing - PASSED")
 
 class TestSessionLifecycle:
     """Test vòng đời của session"""

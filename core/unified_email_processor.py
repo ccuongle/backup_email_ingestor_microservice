@@ -23,13 +23,6 @@ class EmailProcessor:
         self.headers = {"Authorization": f"Bearer {token}"}
         self.client = httpx.Client(headers=self.headers, timeout=10)
         self.rabbitmq_connection = RabbitMQConnection()
-        self.rabbitmq_connection.declare_exchange(exchange_name="email_exchange", exchange_type="topic", durable=True)
-        self.rabbitmq_connection.declare_queue(queue_name="queue.for_extraction", durable=True)
-        self.rabbitmq_connection.bind_queue_to_exchange(
-            queue_name="queue.for_extraction",
-            exchange_name="email_exchange",
-            routing_key="queue.for_extraction"
-        )
         os.makedirs(ATTACH_DIR, exist_ok=True)
     
     def process_email(self, message: Dict, source: str = "unknown") -> Optional[Dict]:
@@ -68,7 +61,7 @@ class EmailProcessor:
             self.rabbitmq_connection.publish(
                 exchange="email_exchange",
                 routing_key="queue.for_extraction",
-                message=metadata
+                body=json.dumps(metadata)
             )
             
             print(f"[EmailProcessor] [{source}] Successfully processed: {msg_id}")

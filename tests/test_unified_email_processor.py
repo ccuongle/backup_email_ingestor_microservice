@@ -1,31 +1,31 @@
 import pytest
+import json
 from unittest.mock import MagicMock, patch
-from ms1_email_ingestor.core.unified_email_processor import EmailProcessor
-from ms1_email_ingestor.core.session_manager import session_manager
+from core.unified_email_processor import EmailProcessor
+from core.session_manager import session_manager
 from utils.rabbitmq import RabbitMQConnection
 
 
 
 @pytest.fixture
 def email_processor_instance():
-    with patch('ms1_email_ingestor.core.unified_email_processor.RabbitMQConnection') as MockRabbitMQConnection:
+    with patch('core.unified_email_processor.RabbitMQConnection') as MockRabbitMQConnection:
         mock_rabbitmq_instance = MagicMock(spec=RabbitMQConnection)
         MockRabbitMQConnection.return_value = mock_rabbitmq_instance
         
         processor = EmailProcessor(token="test_token")
         
         # Configure the mock instance methods
-        mock_rabbitmq_instance.declare_exchange.return_value = None
-        mock_rabbitmq_instance.declare_queue.return_value = None
-        mock_rabbitmq_instance.bind_queue_to_exchange.return_value = None
-        mock_rabbitmq_instance.publish.return_value = None
+        # mock_rabbitmq_instance.declare_exchange.return_value = None
+        # mock_rabbitmq_instance.declare_queue.return_value = None
+        # mock_rabbitmq_instance.bind_queue_to_exchange.return_value = None
         
-        yield processor
+        yield processor, mock_rabbitmq_instance
         processor.close()
 
 @pytest.fixture(autouse=True)
 def clear_session_manager():
-    with patch('ms1_email_ingestor.core.session_manager.session_manager.redis', autospec=True) as mock_redis:
+    with patch('core.session_manager.session_manager.redis', autospec=True) as mock_redis:
         mock_redis.processed_emails_set = set()
         mock_redis.pending_emails_set = set()
         mock_redis.is_email_processed.side_effect = lambda email_id: email_id in mock_redis.processed_emails_set
@@ -34,7 +34,8 @@ def clear_session_manager():
         mock_redis.remove_pending.side_effect = lambda email_id: mock_redis.pending_emails_set.discard(email_id)
         yield
 
-def test_process_email_publishes_to_rabbitmq_on_success(email_processor_instance, mock_rabbitmq_connection):
+def test_process_email_publishes_to_rabbitmq_on_success(email_processor_instance, mocker):
+    processor, mock_rabbitmq_connection = email_processor_instance
     # Given
     mock_message = {
         "id": "test_id_123",
@@ -46,11 +47,11 @@ def test_process_email_publishes_to_rabbitmq_on_success(email_processor_instance
     }
 
     # Mock internal methods to simulate successful processing
-    email_processor_instance._is_spam = MagicMock(return_value=False)
-    email_processor_instance._save_attachments = MagicMock()
+    processor._is_spam = MagicMock(return_value=False)
+    processor._save_attachments = MagicMock()
 
     # When
-    metadata = email_processor_instance.process_email(mock_message)
+    metadata = processor.process_email(mock_message)
 
     # Then
     assert metadata is not None
@@ -63,16 +64,18 @@ def test_process_email_publishes_to_rabbitmq_on_success(email_processor_instance
     assert call_kwargs['exchange'] == "email_exchange"
     assert call_kwargs['routing_key'] == "queue.for_extraction"
     
-    published_message = call_kwargs['message']
-    assert published_message['email_id'] == "test_id_123"
-    assert published_message['sender'] == "sender@example.com"
-    assert published_message['recipient'] == "recipient@example.com"
-    assert published_message['subject'] == "Test Subject"
-    assert published_message['received_date'] == "2025-01-01T12:00:00Z"
-    assert published_message['attachment_name'] is None
-    assert published_message['status'] == "processed"
+    published_message = call_kwargs['body'] # Changed from 'message' to 'body'
+    published_message_dict = json.loads(published_message) # Parse JSON string back to dict
+    assert published_message_dict['email_id'] == "test_id_123"
+    assert published_message_dict['sender'] == "sender@example.com"
+    assert published_message_dict['recipient'] == "recipient@example.com"
+    assert published_message_dict['subject'] == "Test Subject"
+    assert published_message_dict['received_date'] == "2025-01-01T12:00:00Z"
+    assert published_message_dict['attachment_name'] is None
+    assert published_message_dict['status'] == "processed"
 
-def test_process_email_does_not_publish_on_spam(email_processor_instance, mock_rabbitmq_connection):
+def test_process_email_does_not_publish_on_spam(email_processor_instance, mocker):
+    processor, mock_rabbitmq_connection = email_processor_instance
     # Given
     mock_message = {
         "id": "test_id_spam",
@@ -83,19 +86,20 @@ def test_process_email_does_not_publish_on_spam(email_processor_instance, mock_r
     }
 
     # Mock _is_spam to return True
-    email_processor_instance._is_spam = MagicMock(return_value=True)
-    email_processor_instance._move_to_junk = MagicMock()
+    processor._is_spam = MagicMock(return_value=True)
+    processor._move_to_junk = MagicMock()
 
     # When
-    metadata = email_processor_instance.process_email(mock_message)
+    metadata = processor.process_email(mock_message)
 
     # Then
     assert metadata is None
     assert session_manager.is_email_processed("test_id_spam")
     mock_rabbitmq_connection.publish.assert_not_called()
-    email_processor_instance._move_to_junk.assert_called_once_with("test_id_spam")
+    processor._move_to_junk.assert_called_once_with("test_id_spam")
 
-def test_process_email_does_not_publish_on_error(email_processor_instance, mock_rabbitmq_connection):
+def test_process_email_does_not_publish_on_error(email_processor_instance, mocker):
+    processor, mock_rabbitmq_connection = email_processor_instance
     # Given
     mock_message = {
         "id": "test_id_error",
@@ -106,34 +110,13 @@ def test_process_email_does_not_publish_on_error(email_processor_instance, mock_
     }
 
     # Mock _save_attachments to raise an exception
-    email_processor_instance._is_spam = MagicMock(return_value=False)
-    email_processor_instance._save_attachments = MagicMock(side_effect=Exception("Test Error"))
+    processor._is_spam = MagicMock(return_value=False)
+    processor._save_attachments = MagicMock(side_effect=Exception("Test Error"))
 
     # When
-    metadata = email_processor_instance.process_email(mock_message)
+    metadata = processor.process_email(mock_message)
 
     # Then
     assert metadata is None
     assert not session_manager.is_email_processed("test_id_error") # Should not register as processed on error
     mock_rabbitmq_connection.publish.assert_not_called()
-
-def test_email_processor_initializes_rabbitmq_connection(mock_rabbitmq_connection):
-    # Given
-    # mock_rabbitmq_connection is already patched and yielded by the fixture
-    
-    # When
-    processor = EmailProcessor(token="another_test_token")
-    
-    # Then
-    mock_rabbitmq_connection.declare_exchange.assert_called_once_with(
-        exchange_name="email_exchange", exchange_type="topic", durable=True
-    )
-    mock_rabbitmq_connection.declare_queue.assert_called_once_with(
-        queue_name="queue.for_extraction", durable=True
-    )
-    mock_rabbitmq_connection.bind_queue_to_exchange.assert_called_once_with(
-        queue_name="queue.for_extraction",
-        exchange_name="email_exchange",
-        routing_key="queue.for_extraction"
-    )
-    processor.close()

@@ -351,7 +351,23 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.performance)
             item.add_marker(pytest.mark.slow)
             item.add_marker(pytest.mark.redis)
-
+            
+@pytest.fixture(scope="function", autouse=True)
+def mock_rabbitmq_connection():
+    """Global fixture to mock RabbitMQConnection for all tests"""
+    with patch('utils.rabbitmq.RabbitMQConnection') as MockRabbitMQ:
+        mock_instance = MagicMock()
+        MockRabbitMQ.return_value = mock_instance
+        
+        # Mock all methods
+        mock_instance.connect.return_value = None
+        mock_instance.close.return_value = None
+        mock_instance.declare_exchange.return_value = None
+        mock_instance.declare_queue.return_value = None
+        mock_instance.bind_queue_to_exchange.return_value = None
+        mock_instance.publish.return_value = None
+        
+        yield mock_instance
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():

@@ -15,6 +15,8 @@ class SessionState(Enum):
     WEBHOOK_ACTIVE = "webhook_active"
     BOTH_ACTIVE = "both_active"
     TERMINATED = "terminated"
+    FAILED_TO_START = "failed_to_start"
+    SESSION_ERROR = "session_error"
     ERROR = "error"
 
 class TriggerMode(Enum):

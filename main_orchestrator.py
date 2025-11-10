@@ -45,7 +45,7 @@ class EmailIngestionOrchestrator:
         
         # Ensure a clean state before starting a new session
         current_session_state = session_manager.get_session_status()["state"]
-        if current_session_state != SessionState.TERMINATED.value:
+        if current_session_state != SessionState.IDLE.value and current_session_state != SessionState.TERMINATED.value:
             print(f"[Orchestrator] Found active session ({current_session_state}), terminating before starting new one...")
             session_manager.terminate_session(reason="previous_session_cleanup")  # ✅ SYNC
             await asyncio.sleep(1)
