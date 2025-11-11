@@ -1,6 +1,6 @@
 """
-Session Manager - Core component for managing work sessions
-Handles state transitions between polling and webhook modes
+core/session_manager.py
+Enhanced Session Manager with proper error state handling (Story 1.6)
 """
 from datetime import datetime, timezone
 from enum import Enum
@@ -30,7 +30,7 @@ class SessionConfig:
     """Cấu hình phiên làm việc"""
     session_id: str
     start_time: str
-    polling_interval: int = 300  # 5 phút
+    polling_interval: int = 300
     webhook_enabled: bool = True
     polling_mode: str = TriggerMode.SCHEDULED.value
     max_polling_errors: int = 3
@@ -52,38 +52,130 @@ class SessionManager:
             print(f"[SessionManager] Cannot start: current state is {current_state.get('state')}")
             return False
         
-        self.config = config
-        
-        # Xác định state dựa trên config
-        if config.webhook_enabled:
-            self.state = SessionState.BOTH_ACTIVE
-        else:
-            self.state = SessionState.POLLING_ACTIVE
+        try:
+            self.config = config
+            
+            # Xác định state dựa trên config
+            if config.webhook_enabled:
+                self.state = SessionState.BOTH_ACTIVE
+            else:
+                self.state = SessionState.POLLING_ACTIVE
+            
+            session_data = {
+                "session_id": config.session_id,
+                "state": self.state.value,
+                "start_time": config.start_time,
+                "polling_interval": config.polling_interval,
+                "webhook_enabled": config.webhook_enabled,
+                "polling_mode": config.polling_mode,
+                "polling_errors": 0,
+                "webhook_errors": 0,
+                "processed_count": 0,
+                "pending_count": 0,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            self.redis.set_session_state(session_data)
+            print(f"[SessionManager] Session {config.session_id} started")
+            
+            # Hiển thị mode phù hợp
+            if config.webhook_enabled:
+                print("[SessionManager] Mode: BOTH_ACTIVE (Polling + Webhook)")
+            else:
+                print("[SessionManager] Mode: POLLING_ACTIVE (Polling only)")
+            
+            return True
+            
+        except Exception as e:
+            # ✅ NEW: Set FAILED_TO_START state on startup failure
+            print(f"[SessionManager] ERROR: Failed to start session: {e}")
+            self.set_failed_to_start(str(e))
+            return False
+    
+    # ✅ NEW METHOD: Set FAILED_TO_START state
+    def set_failed_to_start(self, reason: str):
+        """
+        Mark session as failed to start.
+        Used when session initialization fails (Story 1.6 AC1-2)
+        """
+        self.state = SessionState.FAILED_TO_START
         
         session_data = {
-            "session_id": config.session_id,
+            "session_id": self.config.session_id if self.config else "unknown",
             "state": self.state.value,
-            "start_time": config.start_time,
-            "polling_interval": config.polling_interval,
-            "webhook_enabled": config.webhook_enabled,
-            "polling_mode": config.polling_mode,
-            "polling_errors": 0,
-            "webhook_errors": 0,
-            "processed_count": 0,
-            "pending_count": 0,
+            "start_time": datetime.now(timezone.utc).isoformat(),
+            "end_time": datetime.now(timezone.utc).isoformat(),
+            "failure_reason": reason,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
         self.redis.set_session_state(session_data)
-        print(f"[SessionManager] Session {config.session_id} started")
+        print(f"[SessionManager] Session marked as FAILED_TO_START: {reason}")
+    
+    # ✅ NEW METHOD: Set SESSION_ERROR state
+    def set_session_error(self, error: str, context: str = ""):
+        """
+        Mark session in error state.
+        Used for runtime errors that require session recovery (Story 1.6 AC1-2)
+        """
+        self.state = SessionState.SESSION_ERROR
         
-        # Hiển thị mode phù hợp
-        if config.webhook_enabled:
-            print("[SessionManager] Mode: BOTH_ACTIVE (Polling + Webhook)")
-        else:
-            print("[SessionManager] Mode: POLLING_ACTIVE (Polling only)")
+        self.redis.update_session_field("state", self.state.value)
+        self.redis.update_session_field("error_details", error)
+        self.redis.update_session_field("error_context", context)
+        self.redis.update_session_field("error_timestamp", datetime.now(timezone.utc).isoformat())
         
-        return True
+        print(f"[SessionManager] Session ERROR: {error} (context: {context})")
+    
+    # ✅ NEW METHOD: Check if session can be recovered
+    def can_recover_from_error(self) -> bool:
+        """
+        Check if current error state can be recovered.
+        Returns True if session should be terminated and restarted.
+        """
+        current_state = self.redis.get_session_state()
+        if not current_state:
+            return False
+        
+        state = current_state.get("state")
+        
+        # FAILED_TO_START and SESSION_ERROR can be recovered
+        if state in [SessionState.FAILED_TO_START.value, SessionState.SESSION_ERROR.value]:
+            print(f"[SessionManager] Session in recoverable error state: {state}")
+            return True
+        
+        return False
+    
+    # ✅ NEW METHOD: Attempt recovery from error state
+    def recover_from_error(self, reason: str = "error_recovery") -> bool:
+        """
+        Attempt to recover from error state by:
+        1. Terminating current session
+        2. Clearing error state
+        3. Allowing new session to start
+        
+        Returns True if recovery successful
+        """
+        if not self.can_recover_from_error():
+            print("[SessionManager] Session not in recoverable error state")
+            return False
+        
+        try:
+            # Save error session to history
+            current_state = self.redis.get_session_state()
+            if current_state:
+                self.redis.save_session_history(current_state)
+            
+            # Clear session state
+            self.redis.delete_session()
+            self.state = SessionState.IDLE
+            
+            print(f"[SessionManager] Recovery successful. Reason: {reason}")
+            return True
+            
+        except Exception as e:
+            print(f"[SessionManager] Recovery failed: {e}")
+            return False
     
     def complete_initial_polling(self) -> bool:
         """Hoàn thành giai đoạn polling ban đầu"""
@@ -106,19 +198,25 @@ class SessionManager:
         if not current_state:
             return False
         
-        if current_state.get("state") == SessionState.WEBHOOK_ACTIVE.value:
-            self.state = SessionState.BOTH_ACTIVE
+        try:
+            if current_state.get("state") == SessionState.WEBHOOK_ACTIVE.value:
+                self.state = SessionState.BOTH_ACTIVE
+                
+                self.redis.update_session_field("state", self.state.value)
+                webhook_errors = self.redis.increment_session_counter("webhook_errors")
+                self.redis.update_session_field("fallback_reason", reason)
+                self.redis.update_session_field("timestamp", datetime.now(timezone.utc).isoformat())
+                
+                print(f"[SessionManager] FALLBACK activated: {reason}")
+                print(f"[SessionManager] Webhook errors: {webhook_errors}")
+                return True
             
-            self.redis.update_session_field("state", self.state.value)
-            webhook_errors = self.redis.increment_session_counter("webhook_errors")
-            self.redis.update_session_field("fallback_reason", reason)
-            self.redis.update_session_field("timestamp", datetime.now(timezone.utc).isoformat())
+            return False
             
-            print(f"[SessionManager] FALLBACK activated: {reason}")
-            print(f"[SessionManager] Webhook errors: {webhook_errors}")
-            return True
-        
-        return False
+        except Exception as e:
+            # ✅ NEW: Set SESSION_ERROR if fallback activation fails
+            self.set_session_error(str(e), "fallback_activation")
+            return False
     
     def restore_webhook_only(self) -> bool:
         """Khôi phục cơ chế chỉ webhook sau khi sửa lỗi"""

@@ -1,6 +1,6 @@
 """
-Polling Service - Updated
-Fetch emails và đẩy vào queue thay vì xử lý trực tiếp
+Polling Service - Enhanced with Pagination Cursor Tracking
+Ensures no emails are missed when pagination exceeds MAX_POLL_PAGES
 """
 import time
 import threading
@@ -23,12 +23,12 @@ from utils.api_retry import api_retry
 
 class PollingService:
     """
-    Polling service - optimized with queue
-    Chỉ fetch và enqueue, không xử lý
+    Polling service - optimized with queue and cursor tracking
     """
     
     GRAPH_URL = "https://graph.microsoft.com/v1.0"
     RATE_LIMIT_KEY = "graph_api_polling"
+    CURSOR_REDIS_KEY = "polling:pagination_cursor"  # ✅ NEW: Store cursor
     
     def __init__(self):
         self.active = False
@@ -74,16 +74,8 @@ class PollingService:
         
         print("[PollingService] Stopped")
 
-# Adding throttle proof:
-    
     def _check_and_wait_for_rate_limit(self) -> bool:
-        """
-        Check rate limit before making Graph API call.
-        If limit exceeded, pause execution for configured duration.
-        
-        Returns:
-            True if request is allowed, False if service should stop
-        """
+        """Check rate limit before making Graph API call"""
         allowed, current_count = self.redis.check_rate_limit(
             key=self.RATE_LIMIT_KEY,
             limit=GRAPH_API_RATE_LIMIT_THRESHOLD,
@@ -94,15 +86,37 @@ class PollingService:
             print(f"[PollingService] Rate limit exceeded ({current_count}/{GRAPH_API_RATE_LIMIT_THRESHOLD})")
             print(f"[PollingService] Pausing for {GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS}s before retry...")
             
-            # Wait with ability to check stop event
             if self._stop_event.wait(timeout=GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS):
-                # Stop event was set during wait
                 return False
             
-            # After wait, check rate limit again
             return self._check_and_wait_for_rate_limit()
         
         return True
+    
+    # ✅ NEW METHOD: Get/Set pagination cursor
+    def _get_pagination_cursor(self) -> Optional[str]:
+        """Get stored pagination cursor for resuming"""
+        try:
+            cursor = self.redis.redis.get(self.CURSOR_REDIS_KEY)
+            if cursor:
+                print(f"[PollingService] Found pagination cursor, resuming from previous position")
+            return cursor
+        except Exception as e:
+            print(f"[PollingService] Error getting cursor: {e}")
+            return None
+    
+    def _set_pagination_cursor(self, cursor: Optional[str]):
+        """Store pagination cursor for next poll"""
+        try:
+            if cursor:
+                # Store with 1 hour TTL (cursor expires after some time)
+                self.redis.redis.setex(self.CURSOR_REDIS_KEY, 3600, cursor)
+                print(f"[PollingService] Stored pagination cursor for next poll")
+            else:
+                # Clear cursor when pagination complete
+                self.redis.redis.delete(self.CURSOR_REDIS_KEY)
+        except Exception as e:
+            print(f"[PollingService] Error setting cursor: {e}")
     
     async def poll_once(self) -> Dict:
         """
@@ -113,26 +127,40 @@ class PollingService:
             print("[PollingService] Fetching unread emails...")
             start_time = time.time()
             
-            # Fetch emails
-            messages = await self._fetch_unread_emails()
+            # ✅ NEW: Check for existing cursor
+            resume_cursor = self._get_pagination_cursor()
+            
+            # Fetch emails (with cursor support)
+            messages, next_cursor = await self._fetch_unread_emails(resume_from=resume_cursor)
             fetch_time = time.time() - start_time
             
             if not messages:
                 print("[PollingService] No unread emails found")
+                # ✅ Clear cursor if no messages
+                self._set_pagination_cursor(None)
                 return {
                     "status": "success",
                     "emails_found": 0,
                     "enqueued": 0,
                     "skipped": 0,
-                    "fetch_time": fetch_time
+                    "fetch_time": fetch_time,
+                    "has_more": False
                 }
             
             print(f"[PollingService] Found {len(messages)} unread emails (took {fetch_time:.2f}s)")
             
+            # ✅ NEW: Save cursor if pagination incomplete
+            if next_cursor:
+                print(f"[PollingService] More emails available, cursor saved for next poll")
+                self._set_pagination_cursor(next_cursor)
+            else:
+                print(f"[PollingService] All emails fetched")
+                self._set_pagination_cursor(None)
+            
             # Batch enqueue
             enqueue_start = time.time()
             emails_to_enqueue = [
-                (msg.get("id"), msg, None)  # (id, data, priority)
+                (msg.get("id"), msg, None)
                 for msg in messages
             ]
             
@@ -163,7 +191,8 @@ class PollingService:
                 "skipped": skipped,
                 "fetch_time": fetch_time,
                 "enqueue_time": enqueue_time,
-                "total_time": time.time() - start_time
+                "total_time": time.time() - start_time,
+                "has_more": bool(next_cursor)  # ✅ NEW: Indicate if more emails available
             }
         
         except Exception as e:
@@ -174,7 +203,8 @@ class PollingService:
                 "error": str(e),
                 "emails_found": 0,
                 "enqueued": 0,
-                "skipped": 0
+                "skipped": 0,
+                "has_more": False
             }
     
     def _polling_loop(self):
@@ -183,7 +213,6 @@ class PollingService:
                 
         while self.active and not self._stop_event.is_set():
             try:
-                
                 # Vòng lặp này chỉ dành cho FALLBACK mode
                 if self.mode != TriggerMode.FALLBACK:
                     print(f"[PollingService] Loop paused (mode: {self.mode.value}). Only runs in FALLBACK mode.")
@@ -205,66 +234,83 @@ class PollingService:
         print("[PollingService] Background polling stopped")
     
     @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
-    async def _fetch_unread_emails(self, max_results: int = 100) -> List[Dict]:
+    async def _fetch_unread_emails(
+        self, 
+        max_results: int = 100,
+        resume_from: Optional[str] = None
+    ) -> tuple[List[Dict], Optional[str]]:
         """
-        Fetch unread emails from Graph API
+        Fetch unread emails from Graph API with cursor support
         
-        This method now supports full pagination to retrieve all unread emails,
-        respecting the `MAX_POLL_PAGES` environment variable as a safeguard.
+        Args:
+            max_results: Max results per page
+            resume_from: Cursor to resume from previous poll
+        
+        Returns:
+            (messages, next_cursor) - next_cursor is None if pagination complete
         """
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
         all_messages = []
         page_count = 0
         
-        # Initial URL and parameters
-        url = f"{self.GRAPH_URL}/me/messages"
-        params = {
-            "$filter": "isRead eq false",
-            "$top": max_results,
-            "$orderby": "receivedDateTime desc"
-        }
+        # ✅ NEW: Use cursor if provided, otherwise start fresh
+        if resume_from:
+            url = resume_from  # Resume from stored cursor
+            params = None  # No params needed for cursor URL
+            print(f"[PollingService] Resuming pagination from stored cursor")
+        else:
+            url = f"{self.GRAPH_URL}/me/messages"
+            params = {
+                "$filter": "isRead eq false",
+                "$top": max_results,
+                "$orderby": "receivedDateTime desc"
+            }
 
         while url and page_count < max_pages:
             if not self._check_and_wait_for_rate_limit():
                 break
+            
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(url, headers=headers, params=params, timeout=30)
-                # Params are only needed for the first request. Subsequent requests use the full nextLink, so we clear it.
+                
+                # Clear params after first request
                 if params:
                     params = None 
 
                 if resp.status_code != 200:
                     print(f"[PollingService] API error during pagination: {resp.status_code} - {resp.text}")
-                    break  # Exit loop on API error
+                    break
 
                 data = resp.json()
                 messages = data.get("value", [])
                 all_messages.extend(messages)
                 
                 page_count += 1
-                url = data.get("@odata.nextLink")  # Get the next page link
+                url = data.get("@odata.nextLink")
 
                 if url:
                     print(f"[PollingService] Fetched page {page_count}, more emails available...")
                 else:
                     print(f"[PollingService] Fetched final page ({page_count}). No more pages.")
+                    
             except httpx.RequestError as e:
                 print(f"[PollingService] Network error during pagination: {e}")
-                raise  # Re-raise the exception
+                raise
 
+        # ✅ NEW: Return cursor if hit max_pages limit
         if page_count >= max_pages and url:
-            print(f"[PollingService] WARN: Reached max poll pages limit ({max_pages}). More emails may be available.")
-
-        return all_messages
+            print(f"[PollingService] ⚠️ Reached max poll pages limit ({max_pages})")
+            print(f"[PollingService] Cursor saved to continue in next poll")
+            return all_messages, url  # Return nextLink as cursor
+        
+        # Pagination complete
+        return all_messages, None
 
     @api_retry(max_retries=GRAPH_API_MAX_RETRIES, initial_backoff=GRAPH_API_INITIAL_BACKOFF_SECONDS, backoff_factor=GRAPH_API_BACKOFF_FACTOR)
     async def _batch_mark_as_read(self, email_ids: List[str]):
-        """
-        Mark a batch of emails as read using Microsoft Graph batching.
-        This is more efficient than sending individual requests.
-        """
+        """Mark a batch of emails as read using Microsoft Graph batching"""
         if not email_ids:
             return
 
@@ -306,12 +352,16 @@ class PollingService:
         """Lấy trạng thái hiện tại"""
         queue_stats = self.queue.get_stats()
         
+        # ✅ NEW: Include cursor status
+        has_cursor = bool(self._get_pagination_cursor())
+        
         return {
             "active": self.active,
             "mode": self.mode.value if self.mode else None,
             "interval": self.interval,
             "thread_alive": self.thread.is_alive() if self.thread else False,
-            "queue_size": queue_stats["queue_size"]
+            "queue_size": queue_stats["queue_size"],
+            "pagination_pending": has_cursor  # ✅ NEW field
         }
 
 

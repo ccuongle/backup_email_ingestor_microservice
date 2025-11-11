@@ -1,20 +1,22 @@
+"""
+tests/unit/core/test_main_orchestrator.py - Updated for Story 1.6
+"""
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 
 from main_orchestrator import EmailIngestionOrchestrator
-from core.session_manager import SessionState, SessionConfig, TriggerMode, session_manager
-from core.polling_service import polling_service
-from core.webhook_service import webhook_service
-from core.batch_processor import get_batch_processor # Import get_batch_processor instead
+from core.session_manager import SessionState, SessionConfig, TriggerMode
 
 @pytest.fixture
 def mock_session_manager():
     with patch('main_orchestrator.session_manager', autospec=True) as mock_sm:
         mock_sm.get_session_status.return_value = {"state": SessionState.TERMINATED.value}
         mock_sm.start_session.return_value = True
-        mock_sm.terminate_session = MagicMock() # Make it a MagicMock for direct call
+        mock_sm.terminate_session = MagicMock()
+        mock_sm.recover_from_error.return_value = True  # ✅ NEW: Add recovery mock
+        mock_sm.complete_initial_polling.return_value = True
         yield mock_sm
 
 @pytest.fixture
@@ -35,9 +37,8 @@ def mock_webhook_service():
 
 @pytest.fixture
 def mock_batch_processor():
-    # Patch get_batch_processor and return a mock instance
     with patch('main_orchestrator.get_batch_processor', autospec=True) as mock_gbp:
-        mock_bp_instance = MagicMock() # No need to spec BatchProcessor directly
+        mock_bp_instance = MagicMock()
         mock_bp_instance.start.return_value = True
         mock_bp_instance.stop = MagicMock()
         mock_bp_instance.active = False
@@ -46,59 +47,92 @@ def mock_batch_processor():
 
 @pytest.fixture
 def orchestrator_instance(mock_session_manager, mock_polling_service, mock_webhook_service, mock_batch_processor):
-    # Reset the singleton instance for each test
-    EmailIngestionOrchestrator._instance = None
     orchestrator = EmailIngestionOrchestrator()
-    # The batch_processor attribute is set by get_batch_processor inside start_session
-    # No need to manually set orchestrator.batch_processor here if get_batch_processor is mocked
     return orchestrator
 
+# ✅ UPDATED TEST: FAILED_TO_START triggers recovery, not terminate
 @pytest.mark.asyncio
 async def test_start_session_with_failed_to_start_state(orchestrator_instance, mock_session_manager):
-    mock_session_manager.get_session_status.return_value = {"state": SessionState.FAILED_TO_START.value}
+    """Test that FAILED_TO_START state triggers recovery (Story 1.6)"""
+    mock_session_manager.get_session_status.return_value = {
+        "state": SessionState.FAILED_TO_START.value,
+        "failure_reason": "Previous error"
+    }
     
     await orchestrator_instance.start_session()
     
-    mock_session_manager.terminate_session.assert_called_once_with(reason="previous_session_cleanup")
+    # ✅ Should call recover_from_error, NOT terminate_session
+    mock_session_manager.recover_from_error.assert_called_once_with(reason="orchestrator_startup_recovery")
+    mock_session_manager.terminate_session.assert_not_called()  # Should NOT terminate
     mock_session_manager.start_session.assert_called_once()
     assert orchestrator_instance.running is True
 
+# ✅ UPDATED TEST: SESSION_ERROR triggers recovery, not terminate
 @pytest.mark.asyncio
 async def test_start_session_with_session_error_state(orchestrator_instance, mock_session_manager):
-    mock_session_manager.get_session_status.return_value = {"state": SessionState.SESSION_ERROR.value}
+    """Test that SESSION_ERROR state triggers recovery (Story 1.6)"""
+    mock_session_manager.get_session_status.return_value = {
+        "state": SessionState.SESSION_ERROR.value,
+        "error_details": "Runtime error"
+    }
     
     await orchestrator_instance.start_session()
     
-    mock_session_manager.terminate_session.assert_called_once_with(reason="previous_session_cleanup")
+    # ✅ Should call recover_from_error, NOT terminate_session
+    mock_session_manager.recover_from_error.assert_called_once_with(reason="orchestrator_startup_recovery")
+    mock_session_manager.terminate_session.assert_not_called()  # Should NOT terminate
     mock_session_manager.start_session.assert_called_once()
     assert orchestrator_instance.running is True
 
 @pytest.mark.asyncio
 async def test_start_session_with_terminated_state(orchestrator_instance, mock_session_manager):
+    """Test that TERMINATED state allows new session without recovery"""
     mock_session_manager.get_session_status.return_value = {"state": SessionState.TERMINATED.value}
     
     await orchestrator_instance.start_session()
     
-    mock_session_manager.terminate_session.assert_not_called() # Should not terminate if already terminated
+    mock_session_manager.terminate_session.assert_not_called()  # Already terminated
+    mock_session_manager.recover_from_error.assert_not_called()  # No recovery needed
     mock_session_manager.start_session.assert_called_once()
     assert orchestrator_instance.running is True
 
 @pytest.mark.asyncio
 async def test_start_session_with_idle_state(orchestrator_instance, mock_session_manager):
+    """Test that IDLE state allows new session without any cleanup"""
     mock_session_manager.get_session_status.return_value = {"state": SessionState.IDLE.value}
     
     await orchestrator_instance.start_session()
     
-    mock_session_manager.terminate_session.assert_not_called() # Should not terminate if idle
+    mock_session_manager.terminate_session.assert_not_called()
+    mock_session_manager.recover_from_error.assert_not_called()
     mock_session_manager.start_session.assert_called_once()
     assert orchestrator_instance.running is True
 
 @pytest.mark.asyncio
 async def test_start_session_with_active_state_terminates_old_session(orchestrator_instance, mock_session_manager):
+    """Test that active state triggers graceful termination (not recovery)"""
     mock_session_manager.get_session_status.return_value = {"state": SessionState.POLLING_ACTIVE.value}
     
     await orchestrator_instance.start_session()
     
+    # ✅ Active states should terminate (with cleanup), not recover
     mock_session_manager.terminate_session.assert_called_once_with(reason="previous_session_cleanup")
+    mock_session_manager.recover_from_error.assert_not_called()  # No recovery for active
     mock_session_manager.start_session.assert_called_once()
     assert orchestrator_instance.running is True
+
+# ✅ NEW TEST: Test recovery failure handling
+@pytest.mark.asyncio
+async def test_start_session_fails_when_recovery_fails(orchestrator_instance, mock_session_manager):
+    """Test that session start fails if recovery fails"""
+    mock_session_manager.get_session_status.return_value = {
+        "state": SessionState.FAILED_TO_START.value
+    }
+    mock_session_manager.recover_from_error.return_value = False  # Recovery fails
+    
+    result = await orchestrator_instance.start_session()
+    
+    assert result is False
+    mock_session_manager.recover_from_error.assert_called_once()
+    mock_session_manager.start_session.assert_not_called()  # Should not start if recovery failed
+    assert orchestrator_instance.running is False

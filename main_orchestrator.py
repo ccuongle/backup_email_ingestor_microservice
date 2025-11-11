@@ -1,6 +1,6 @@
 """
-Main Orchestrator - Signal Handling Fix
-Sửa lỗi graceful shutdown với async/await
+main_orchestrator.py
+Enhanced Orchestrator with proper error state recovery (Story 1.6 AC2-3)
 """
 import asyncio
 import signal
@@ -26,16 +26,13 @@ class EmailIngestionOrchestrator:
         self.current_session_id: Optional[str] = None
         self.batch_processor = None
         self._shutdown_event = asyncio.Event()
-        
-        # Setup signal handlers - KHÔNG dùng signal.signal trong async context
-        # Sẽ setup trong main() thay vì __init__
     
     async def start_session(
         self,
         polling_mode: TriggerMode = TriggerMode.SCHEDULED,
         polling_interval: int = 300,
         enable_webhook: bool = True,
-        batch_size: int = 50,
+        batch_size: int = 20,
         max_workers: int = 20
     ) -> bool:
         """Khởi động phiên làm việc với batch processing"""
@@ -43,13 +40,52 @@ class EmailIngestionOrchestrator:
             print("[Orchestrator] Session already running")
             return False
         
-        # Ensure a clean state before starting a new session
+        # ✅ NEW: Check and handle error states (Story 1.6 AC2-3)
         current_session_state = session_manager.get_session_status()["state"]
-        if current_session_state != SessionState.IDLE.value and current_session_state != SessionState.TERMINATED.value:
-            print(f"[Orchestrator] Found active session ({current_session_state}), terminating before starting new one...")
-            session_manager.terminate_session(reason="previous_session_cleanup")  # ✅ SYNC
-            await asyncio.sleep(1)
+        
+        # List of states that require cleanup before starting new session
+        error_states = [
+            SessionState.FAILED_TO_START.value,
+            SessionState.SESSION_ERROR.value,
+            SessionState.ERROR.value
+        ]
+        
+        active_states = [
+            SessionState.POLLING_ACTIVE.value,
+            SessionState.WEBHOOK_ACTIVE.value,
+            SessionState.BOTH_ACTIVE.value
+        ]
+        
+        # ✅ Handle error states with recovery
+        if current_session_state in error_states:
+            print(f"[Orchestrator] Found session in error state: {current_session_state}")
+            print("[Orchestrator] Attempting recovery...")
             
+            # Get error details for logging
+            session_info = session_manager.get_session_status()
+            error_reason = session_info.get("failure_reason") or session_info.get("error_details", "unknown")
+            print(f"[Orchestrator] Previous error: {error_reason}")
+            
+            # Attempt recovery
+            if not session_manager.recover_from_error(reason="orchestrator_startup_recovery"):
+                print("[Orchestrator] ERROR: Recovery failed, cannot start new session")
+                return False
+            
+            print("[Orchestrator] ✓ Recovery successful, proceeding with new session")
+            await asyncio.sleep(1)  # Brief pause after recovery
+        
+        # ✅ Handle active states (need graceful termination)
+        elif current_session_state in active_states:
+            print(f"[Orchestrator] Found active session ({current_session_state})")
+            print("[Orchestrator] Terminating previous session before starting new one...")
+            
+            # Gracefully terminate active session
+            await self._cleanup_previous_session()
+            session_manager.terminate_session(reason="previous_session_cleanup")
+            await asyncio.sleep(1)
+        
+        # IDLE and TERMINATED states are OK to start
+        
         # Tạo session config
         session_id = f"session_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         config = SessionConfig(
@@ -76,6 +112,8 @@ class EmailIngestionOrchestrator:
         try:
             # Phase 0: Start session
             if not session_manager.start_session(config):
+                # ✅ Session start failure already sets FAILED_TO_START state
+                print("[Orchestrator] ERROR: Failed to start session")
                 return False
             
             self.current_session_id = session_id
@@ -98,6 +136,7 @@ class EmailIngestionOrchestrator:
                 print("\n[Orchestrator] Phase 2: Starting Webhook Service...")
                 if not await webhook_service.start():
                     print("[Orchestrator] WARNING: Webhook failed to start")
+                    # ✅ Don't fail entire session, just log warning
                 else:
                     print("[Orchestrator] ✓ Webhook service started")
             else:
@@ -132,8 +171,41 @@ class EmailIngestionOrchestrator:
         
         except Exception as e:
             print(f"[Orchestrator] Session start error: {e}")
+            # ✅ Set SESSION_ERROR state before cleanup
+            session_manager.set_session_error(str(e), "session_startup")
             await self._cleanup()
             return False
+    
+    # ✅ NEW METHOD: Cleanup previous session resources
+    async def _cleanup_previous_session(self):
+        """
+        Cleanup resources from previous session.
+        Used when terminating error/active sessions before starting new one.
+        """
+        print("[Orchestrator] Cleaning up previous session resources...")
+        
+        try:
+            # Stop polling if active
+            if polling_service.active:
+                polling_service.stop()
+                print("[Orchestrator] ✓ Stopped previous polling service")
+            
+            # Stop webhook if active
+            if webhook_service.active:
+                await webhook_service.stop()
+                print("[Orchestrator] ✓ Stopped previous webhook service")
+            
+            # Stop batch processor if active
+            if self.batch_processor and self.batch_processor.active:
+                self.batch_processor.stop()
+                print("[Orchestrator] ✓ Stopped previous batch processor")
+            
+            # Brief pause to ensure cleanup completes
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            print(f"[Orchestrator] WARNING: Error during previous session cleanup: {e}")
+            # Continue anyway - best effort cleanup
     
     async def stop_session(self, reason: str = "user_requested"):
         """Dừng phiên làm việc"""
@@ -148,8 +220,8 @@ class EmailIngestionOrchestrator:
         # Stop services
         await self._cleanup()
         
-        # Terminate session - SYNC function
-        session_manager.terminate_session(reason)  # Không cần await
+        # Terminate session
+        session_manager.terminate_session(reason)
         
         # Show summary
         status = self.get_status()
@@ -217,18 +289,15 @@ class EmailIngestionOrchestrator:
             monitor_interval = 10
             
             while self.running:
-                # Wait với timeout để check shutdown event
                 try:
                     await asyncio.wait_for(
                         self._shutdown_event.wait(),
                         timeout=monitor_interval
                     )
-                    # Shutdown event được set
                     print("[Orchestrator] Shutdown event detected")
                     await self.stop_session(reason="shutdown_requested")
                     break
                 except asyncio.TimeoutError:
-                    # Timeout bình thường, tiếp tục monitoring
                     pass
                 
                 # Get status
@@ -237,6 +306,14 @@ class EmailIngestionOrchestrator:
                 
                 # Print monitoring info
                 self._print_monitoring(status)
+                
+                # ✅ Check for error states during monitoring
+                if session_state in [SessionState.SESSION_ERROR, SessionState.ERROR]:
+                    print("\n[Orchestrator] ERROR: Session entered error state during operation")
+                    error_details = status['session'].get('error_details', 'unknown')
+                    print(f"[Orchestrator] Error details: {error_details}")
+                    await self.stop_session(reason="session_error_detected")
+                    break
                 
                 # Check if terminated
                 if session_state == SessionState.TERMINATED:
@@ -270,21 +347,18 @@ class EmailIngestionOrchestrator:
         """Cleanup tất cả services"""
         print("[Orchestrator] Cleaning up services...")
         
-        # Stop polling first (SYNC)
         if polling_service.active:
-            polling_service.stop()  # SYNC - không cần await
+            polling_service.stop()
             print("[Orchestrator] ✓ Polling stopped")
         
-        # Stop webhook (ASYNC)
         if webhook_service.active:
             await webhook_service.stop()
             print("[Orchestrator] ✓ Webhook stopped")
         
-        # Let batch processor finish (SYNC)
         if self.batch_processor and self.batch_processor.active:
             print("[Orchestrator] Waiting for batch processor to finish...")
             await asyncio.sleep(2)
-            self.batch_processor.stop()  # SYNC - không cần await
+            self.batch_processor.stop()
             print("[Orchestrator] ✓ Batch Processor stopped")
     
     def _calculate_success_rate(self, batch_stats: dict) -> float:
@@ -299,10 +373,9 @@ class EmailIngestionOrchestrator:
         return round((success / total) * 100, 1)
     
     async def shutdown(self):
-        """Graceful shutdown - được gọi từ signal handler"""
+        """Graceful shutdown"""
         print("\n[Orchestrator] Initiating graceful shutdown...")
         self._shutdown_event.set()
-        # Không gọi stop_session ở đây - sẽ được gọi trong wait_for_session
 
 
 # Singleton instance
@@ -316,27 +389,20 @@ async def main():
     import argparse
     import platform
     
-    # Setup signal handlers cho async
     loop = asyncio.get_running_loop()
     
     def signal_handler(sig):
-        """Signal handler - tạo task để shutdown"""
         print(f"\n[Main] Received signal {sig}")
-        # Tạo task để shutdown thay vì gọi asyncio.run()
         asyncio.create_task(orchestrator.shutdown())
     
-    # Register signals - khác nhau giữa Windows và Unix
     if platform.system() == 'Windows':
-        # Windows không hỗ trợ add_signal_handler, dùng signal.signal
         def windows_signal_handler(sig, frame):
             print(f"\n[Main] Received signal {sig}")
-            # Set shutdown event
             loop.call_soon_threadsafe(orchestrator._shutdown_event.set)
         
         signal.signal(signal.SIGINT, windows_signal_handler)
         signal.signal(signal.SIGTERM, windows_signal_handler)
     else:
-        # Unix/Linux/MacOS
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
     
@@ -399,9 +465,9 @@ async def main():
             polling_interval=0
         )
         
-        session_manager.start_session(config)  # SYNC
-        result = await polling_service.poll_once()  # ASYNC
-        session_manager.terminate_session("one_time_complete")  # SYNC
+        session_manager.start_session(config)
+        result = await polling_service.poll_once()
+        session_manager.terminate_session("one_time_complete")
         
         print("\n" + "=" * 70)
         print("POLL RESULT:")

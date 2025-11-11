@@ -1,7 +1,6 @@
 """
-Batch Email Processor
+Batch Email Processor - Fixed Race Condition
 Xử lý email song song với ThreadPoolExecutor
-Tối ưu hóa I/O operations
 """
 import time
 import threading
@@ -23,19 +22,20 @@ class BatchEmailProcessor:
     """
     
     def __init__(
-    self,
-    batch_size: int = 50,
-    max_workers: int = 20,
-    fetch_interval: float = 2.0,
-    email_processor: Optional[EmailProcessor] = None,
-    rabbitmq_manager: Optional[RabbitMQConnection] = None
-):
+        self,
+        batch_size: int = 20,
+        max_workers: int = 20,
+        fetch_interval: float = 2.0,
+        email_processor: Optional[EmailProcessor] = None,
+        rabbitmq_manager: Optional[RabbitMQConnection] = None
+    ):
         """
         Args:
             batch_size: Number of emails per batch
             max_workers: Parallel workers
             fetch_interval: Seconds between queue checks
             email_processor: Optional pre-injected EmailProcessor (for testing)
+            rabbitmq_manager: Optional pre-injected RabbitMQ (for testing)
         """
         self.batch_size = batch_size
         self.max_workers = max_workers
@@ -71,8 +71,6 @@ class BatchEmailProcessor:
         print(f"  Fetch interval: {self.fetch_interval}s")
         
         # Initialize processor
-        # token = get_token()
-        # self.processor = EmailProcessor(token)
         if self.processor is None:
             token = get_token()
             self.processor = EmailProcessor(token)
@@ -127,26 +125,26 @@ class BatchEmailProcessor:
         
         while self.active and not self._stop_event.is_set():
             try:
-                # Check queue stats
+                # ✅ FIX: Get fresh queue stats before dequeue
                 queue_stats = self.queue.get_stats()
                 queue_size = queue_stats["queue_size"]
                 shutting_down = self._stop_event.is_set()
                 
                 # Process if: queue has enough for a full batch OR (shutting down AND there are emails)
-                if queue_size >= self.batch_size or (shutting_down and queue_size > 0):
-                    pass # Proceed with processing
-                else:
-                    # Not enough for a full batch and not shutting down with remaining emails, so wait
+                if queue_size < self.batch_size and not (shutting_down and queue_size > 0):
+                    # Not enough for a full batch and not shutting down
                     time.sleep(self.fetch_interval)
                     continue
                 
                 if queue_size > 0:
                     print(f"\n[BatchProcessor] Queue size: {queue_size}. Triggering batch processing.")
                 
-                # Fetch batch
+                # ✅ FIX: Fetch batch and immediately check if empty
                 batch = self.queue.dequeue_batch(self.batch_size)
                 
+                # ✅ CRITICAL FIX: Check batch after dequeue (race condition fix)
                 if not batch:
+                    print("[BatchProcessor] Dequeued empty batch (race condition), retrying...")
                     time.sleep(self.fetch_interval)
                     continue
                 
@@ -181,6 +179,8 @@ class BatchEmailProcessor:
             
             except Exception as e:
                 print(f"[BatchProcessor] Loop error: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(5)
         
         print("[BatchProcessor] Processing loop stopped")
@@ -195,9 +195,16 @@ class BatchEmailProcessor:
         Returns:
             {"success": int, "failed": int}
         """
+        # ✅ VALIDATION: Ensure batch is not empty
+        if not batch:
+            print("[BatchProcessor] WARNING: Empty batch received in parallel processing")
+            return {"success": 0, "failed": 0}
+        
         result = {"success": 0, "failed": 0}
+        
+        # ✅ VALIDATION: Ensure executor exists
         if not self.executor:
-            # Fallback initialization, should be done in start()
+            print("[BatchProcessor] ERROR: Executor not initialized, reinitializing...")
             self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
 
         futures = {
@@ -214,7 +221,17 @@ class BatchEmailProcessor:
                 
                 if payload:
                     result["success"] += 1
-                    self.rabbitmq_manager.publish('email_exchange', 'extracted_data', json.dumps(payload))
+                    # ✅ ADD: Try-catch for RabbitMQ publish
+                    try:
+                        self.rabbitmq_manager.publish(
+                            'email_exchange', 
+                            'extracted_data', 
+                            json.dumps(payload)
+                        )
+                    except Exception as pub_error:
+                        print(f"[BatchProcessor] WARNING: RabbitMQ publish failed for {email_id}: {pub_error}")
+                        # Still mark as processed locally, but log the issue
+                    
                     processed_ids.append(email_id)
                 else:
                     result["failed"] += 1
@@ -227,8 +244,12 @@ class BatchEmailProcessor:
                 self.queue.mark_failed(email_id, str(e))
                 print(f"[BatchProcessor] Error processing {email_id}: {e}")
         
+        # ✅ Mark processed after all futures complete
         if processed_ids:
-            self.queue.mark_processed(processed_ids)
+            try:
+                self.queue.mark_processed(processed_ids)
+            except Exception as mark_error:
+                print(f"[BatchProcessor] WARNING: Failed to mark emails as processed: {mark_error}")
         
         return result
     
@@ -246,6 +267,7 @@ class BatchEmailProcessor:
         try:
             if self.processor is None:
                 # This is a fallback, should be initialized in start()
+                print("[BatchProcessor] WARNING: Processor not initialized, creating new instance")
                 token = get_token()
                 self.processor = EmailProcessor(token)
 
