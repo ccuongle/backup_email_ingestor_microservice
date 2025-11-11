@@ -7,7 +7,6 @@ import pytest
 import pika
 from unittest.mock import patch, MagicMock
 from utils.rabbitmq import RabbitMQConnection
-from utils import config
 
 
 # -------------------------------------------------------------

@@ -8,8 +8,7 @@ from core.polling_service import PollingService
 @pytest.fixture
 def polling_service():
     """Fixture for PollingService."""
-    with patch('core.polling_service.get_redis_storage') as mock_redis, \
-         patch('core.polling_service.get_email_queue') as mock_queue:
+    with patch('core.polling_service.get_redis_storage') as mock_redis:
         
         mock_redis_instance = MagicMock()
         mock_redis.return_value = mock_redis_instance

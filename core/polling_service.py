@@ -99,7 +99,7 @@ class PollingService:
         try:
             cursor = self.redis.redis.get(self.CURSOR_REDIS_KEY)
             if cursor:
-                print(f"[PollingService] Found pagination cursor, resuming from previous position")
+                print("[PollingService] Found pagination cursor, resuming from previous position")
             return cursor
         except Exception as e:
             print(f"[PollingService] Error getting cursor: {e}")
@@ -111,7 +111,7 @@ class PollingService:
             if cursor:
                 # Store with 1 hour TTL (cursor expires after some time)
                 self.redis.redis.setex(self.CURSOR_REDIS_KEY, 3600, cursor)
-                print(f"[PollingService] Stored pagination cursor for next poll")
+                print("[PollingService] Stored pagination cursor for next poll")
             else:
                 # Clear cursor when pagination complete
                 self.redis.redis.delete(self.CURSOR_REDIS_KEY)
@@ -151,10 +151,10 @@ class PollingService:
             
             # ✅ NEW: Save cursor if pagination incomplete
             if next_cursor:
-                print(f"[PollingService] More emails available, cursor saved for next poll")
+                print("[PollingService] More emails available, cursor saved for next poll")
                 self._set_pagination_cursor(next_cursor)
             else:
-                print(f"[PollingService] All emails fetched")
+                print("[PollingService] All emails fetched")
                 self._set_pagination_cursor(None)
             
             # Batch enqueue
@@ -258,7 +258,7 @@ class PollingService:
         if resume_from:
             url = resume_from  # Resume from stored cursor
             params = None  # No params needed for cursor URL
-            print(f"[PollingService] Resuming pagination from stored cursor")
+            print("[PollingService] Resuming pagination from stored cursor")
         else:
             url = f"{self.GRAPH_URL}/me/messages"
             params = {
@@ -302,7 +302,7 @@ class PollingService:
         # ✅ NEW: Return cursor if hit max_pages limit
         if page_count >= max_pages and url:
             print(f"[PollingService] ⚠️ Reached max poll pages limit ({max_pages})")
-            print(f"[PollingService] Cursor saved to continue in next poll")
+            print("[PollingService] Cursor saved to continue in next poll")
             return all_messages, url  # Return nextLink as cursor
         
         # Pagination complete

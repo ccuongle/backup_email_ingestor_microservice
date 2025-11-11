@@ -2,12 +2,10 @@
 tests/unit/core/test_main_orchestrator.py - Updated for Story 1.6
 """
 import pytest
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
 from main_orchestrator import EmailIngestionOrchestrator
-from core.session_manager import SessionState, SessionConfig, TriggerMode
+from core.session_manager import SessionState
 
 @pytest.fixture
 def mock_session_manager():

@@ -3,10 +3,10 @@ tests/test_error_handling.py (Fixed version)
 Comprehensive tests for Story 1.6 - Error State Recovery
 """
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch, call
+from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime, timezone
 
-from core.session_manager import SessionManager, SessionConfig, SessionState, TriggerMode
+from core.session_manager import SessionManager, SessionConfig, SessionState
 from main_orchestrator import EmailIngestionOrchestrator
 
 
@@ -337,8 +337,7 @@ class TestBatchProcessorRaceCondition:
         # Given
         from core.batch_processor import BatchEmailProcessor
         
-        with patch('core.batch_processor.get_email_queue') as mock_queue, \
-             patch('core.batch_processor.get_token') as mock_token, \
+        with patch('core.batch_processor.get_token') as mock_token, \
              patch('core.batch_processor.EmailProcessor') as mock_processor_class, \
              patch('core.batch_processor.RabbitMQConnection') as mock_rmq:
             
@@ -364,8 +363,7 @@ class TestPollingCursorTracking:
     def polling_service(self):
         from core.polling_service import PollingService
         
-        with patch('core.polling_service.get_redis_storage') as mock_redis, \
-             patch('core.polling_service.get_email_queue') as mock_queue:
+        with patch('core.polling_service.get_redis_storage') as mock_redis:
             
             mock_redis_instance = MagicMock()
             mock_redis.return_value = mock_redis_instance

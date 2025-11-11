@@ -88,7 +88,7 @@ def test_consume_message(rabbitmq_connection):
     # Optionally, you can check other arguments if needed, but not the callback object itself
     args, kwargs = rabbitmq_connection.channel.basic_consume.call_args
     assert kwargs['queue'] == queue_name
-    assert kwargs['auto_ack'] == False
+    assert not kwargs['auto_ack']
     
     rabbitmq_connection.channel.start_consuming.assert_called_once()
 

@@ -18,11 +18,19 @@ from utils.rabbitmq import RabbitMQConnection
 class EmailProcessor:
     """Core processor xử lý email"""
     
-    def __init__(self, token: str):
+    def __init__(self, token: str, rabbitmq_connection: Optional[RabbitMQConnection] = None):
+        """
+        Args:
+            token: MS Graph API token
+            rabbitmq_connection: Optional RabbitMQ connection (cho testing)
+        """
         self.token = token
         self.headers = {"Authorization": f"Bearer {token}"}
         self.client = httpx.Client(headers=self.headers, timeout=10)
-        self.rabbitmq_connection = RabbitMQConnection()
+        
+        # ✅ Cho phép inject mock connection từ bên ngoài
+        self.rabbitmq_connection = rabbitmq_connection or RabbitMQConnection()
+        
         os.makedirs(ATTACH_DIR, exist_ok=True)
     
     def process_email(self, message: Dict, source: str = "unknown") -> Optional[Dict]:
@@ -69,6 +77,8 @@ class EmailProcessor:
 
         except Exception as e:
             print(f"[EmailProcessor] [{source}] Error processing {msg_id}: {e}")
+            import traceback
+            traceback.print_exc()  # ✅ Debug: In ra full stack trace
             return None
     
     def batch_process_emails(self, messages: List[Dict], source: str = "polling") -> Dict:
@@ -136,16 +146,12 @@ class EmailProcessor:
         except Exception as e:
             print(f"[EmailProcessor] Save attachments error: {e}")
     
-
-    
     def _prepare_persistence_payload(self, message: Dict) -> Dict:
         """Chuẩn bị metadata để gửi đến MS4 Persistence."""
         sender_address = message.get("from", {}).get("emailAddress", {}).get("address", "")
         recipient_address = message.get("toRecipients", [{}])[0].get("emailAddress", {}).get("address", "")
         attachment_name = None
         if message.get("hasAttachments", False):
-            # This is a simplification. In a real scenario, we might need to fetch attachment details.
-            # For now, we'll just indicate if attachments exist.
             attachment_name = "attachments_exist" 
 
         metadata = {
@@ -160,6 +166,8 @@ class EmailProcessor:
         return metadata
     
     def close(self):
-        """Closes the httpx client."""
+        """Closes the httpx client and RabbitMQ connection."""
         self.client.close()
+        if hasattr(self.rabbitmq_connection, 'close'):
+            self.rabbitmq_connection.close()
         print("[EmailProcessor] HTTPX client closed.")

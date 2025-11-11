@@ -1,4 +1,3 @@
-import pytest
 from core.session_manager import SessionState
 
 def test_session_state_enum_has_failed_to_start():
