@@ -5,6 +5,7 @@ Enhanced Orchestrator with proper error state recovery (Story 1.6 AC2-3)
 import asyncio
 import signal
 import sys
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -386,6 +387,25 @@ orchestrator = EmailIngestionOrchestrator()
 
 async def main():
     """CLI interface với async signal handling"""
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+
+    # --- Begin Token Check ---
+    from cache.redis_manager import get_redis_storage
+    from core.get_access_token import get_ms_graph_tokens_interactively
+    
+    redis_manager = get_redis_storage()
+    if not redis_manager.get_access_token(): # Removed await
+        logger.info("No valid MS Graph token found. Starting interactive login...")
+        access_token, _ = await get_ms_graph_tokens_interactively()
+        if not access_token:
+            logger.error("Authentication failed or was cancelled. Exiting.")
+            sys.exit(1)
+        logger.info("Authentication successful. Proceeding with startup...")
+    else:
+        logger.info("Valid MS Graph token found. Proceeding with startup...")
+    # --- End Token Check ---
+
     import argparse
     import platform
     

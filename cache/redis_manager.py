@@ -23,6 +23,7 @@ class RedisStorageManager:
     KEY_SESSIONS_HISTORY = "sessions:history"
     KEY_WEBHOOK_SUB = "webhook:subscription"
     KEY_REFRESH_TOKEN = "auth:refresh_token"
+    KEY_ACCESS_TOKEN = "auth:access_token" # New key for access token
     KEY_LOCK_PREFIX = "lock:"
     KEY_METRICS_PREFIX = "metrics:"
     KEY_COUNTER_PREFIX = "counter:"
@@ -559,6 +560,41 @@ class RedisStorageManager:
         WARNING: Expensive operation, chỉ dùng cho debugging
         """
         return self.redis.keys(pattern)
+
+    # ==================== AUTH TOKENS ====================
+
+    def set_access_token(self, token: str, expires_in: int):
+        """
+        Stores the access token with its expiration.
+        Args:
+            token: The access token string.
+            expires_in: The token's validity duration in seconds.
+        """
+        self.redis.set(self.KEY_ACCESS_TOKEN, token, ex=expires_in)
+
+    def get_access_token(self) -> Optional[str]:
+        """
+        Retrieves the access token if it's still valid.
+        Returns:
+            The access token string if valid, otherwise None.
+        """
+        return self.redis.get(self.KEY_ACCESS_TOKEN)
+
+    def set_refresh_token(self, token: str):
+        """
+        Stores the refresh token.
+        Args:
+            token: The refresh token string.
+        """
+        self.redis.set(self.KEY_REFRESH_TOKEN, token)
+
+    def get_refresh_token(self) -> Optional[str]:
+        """
+        Retrieves the refresh token.
+        Returns:
+            The refresh token string, otherwise None.
+        """
+        return self.redis.get(self.KEY_REFRESH_TOKEN)
     
     def close(self):
         """Close Redis connection"""

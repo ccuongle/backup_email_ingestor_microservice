@@ -26,6 +26,7 @@ LOG_DIR = str(LOG_DIR)
 # ============= Microsoft Graph API =============
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI")
 
 SCOPES = [
     "Mail.ReadWrite",
@@ -107,10 +108,10 @@ ENABLE_SPAM_FILTER = os.getenv("ENABLE_SPAM_FILTER", "true").lower() == "true"
 
 
 # RabbitMQ Connection Configuration
-RABBITMQ_HOST = os.getenv('RABBITMQ_HOST')
+RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', "localhost")
 RABBITMQ_PORT = int(os.getenv('RABBITMQ_PORT', 5672))
-RABBITMQ_USERNAME = os.getenv('RABBITMQ_USERNAME')
-RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD')
+RABBITMQ_USERNAME = os.getenv('RABBITMQ_USERNAME', "admin")
+RABBITMQ_PASSWORD = os.getenv('RABBITMQ_PASSWORD', "admin123")
 RABBITMQ_VIRTUAL_HOST = os.getenv('RABBITMQ_VIRTUAL_HOST', '/')
 
 # MS1 Queue Topology (Producer)
@@ -121,6 +122,9 @@ RABBITMQ_QUEUE_NAME = os.getenv('RABBITMQ_QUEUE_NAME', 'queue.for_extraction')
 # Service Settings
 SERVICE_NAME = os.getenv('SERVICE_NAME', 'ms1_email_ingestor')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+
+# Ngrok Auth token: 
+NGROK_AUTHTOKEN = os.getenv('NGROK_AUTH_TOKEN')
 
 # ============= Validation =============
 def validate_config():
@@ -158,7 +162,3 @@ def validate_config():
     
     if errors:
         raise ValueError("Configuration errors:\n" + "\n".join(f"  - {e}" for e in errors))
-
-# Validate on import
-# if __name__ == "__main__":
-#     validate_config()

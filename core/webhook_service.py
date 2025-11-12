@@ -20,7 +20,8 @@ from utils.config import (
     GRAPH_API_RATE_LIMIT_RETRY_DELAY_SECONDS,
     GRAPH_API_MAX_RETRIES,
     GRAPH_API_INITIAL_BACKOFF_SECONDS,
-    GRAPH_API_BACKOFF_FACTOR
+    GRAPH_API_BACKOFF_FACTOR,
+    NGROK_AUTHTOKEN
 )
 from utils.api_retry import api_retry
 
@@ -273,6 +274,8 @@ class WebhookService:
     def _start_ngrok(self) -> str:
         """Khởi động ngrok tunnel riêng cho webhook"""
         try:
+            if NGROK_AUTHTOKEN:
+                ngrok.set_auth_token(NGROK_AUTHTOKEN)
             self.ngrok_tunnel = ngrok.connect(
                 self.WEBHOOK_PORT,
                 bind_tls=True,

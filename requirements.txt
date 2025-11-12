@@ -20,6 +20,5 @@ respx
 pika
 python-dotenv
 testcontainers
-pytest-testcontainers
 requests
 testcontainers[rabbitmq]
