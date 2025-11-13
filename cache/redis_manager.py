@@ -595,7 +595,20 @@ class RedisStorageManager:
             The refresh token string, otherwise None.
         """
         return self.redis.get(self.KEY_REFRESH_TOKEN)
-    
+
+    def save_tokens(self, access_token: str, expires_in: int, refresh_token: Optional[str] = None):
+        """
+        Saves the access and refresh tokens to Redis.
+
+        Args:
+            access_token: The access token string.
+            expires_in: The access token's validity duration in seconds.
+            refresh_token: The optional refresh token string.
+        """
+        self.set_access_token(access_token, expires_in)
+        if refresh_token:
+            self.set_refresh_token(refresh_token)
+        
     def close(self):
         """Close Redis connection"""
         self.redis.close()

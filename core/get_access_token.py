@@ -1,8 +1,7 @@
-import os
 import webbrowser
 import logging
 from msal import ConfidentialClientApplication
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 from utils.config import CLIENT_ID, CLIENT_SECRET, SCOPES, REDIRECT_URI
 from cache.redis_manager import get_redis_storage
 
@@ -51,39 +50,57 @@ async def get_ms_graph_tokens_interactively() -> Tuple[Optional[str], Optional[s
     logger.info("="*80)
     logger.info("Please complete the login in your browser.")
     logger.info(f"If the browser did not open, please navigate to this URL manually:\n{auth_url}")
-    logger.info("After successful login, you will be redirected to a blank page or localhost.")
-    logger.info("Read the redirected URI on your browser's address bar (http://localhost:8000/callback?code=M...), copy from `code = ...` and paste it below.")
+    logger.info("After successful login, you will be redirected to a blank page (e.g., localhost).")
+    logger.info("Copy the ENTIRE address from your browser's address bar.")
+    logger.info("It will look like: http://localhost:8000/callback?code=M.R3_BAY.some_long_code...")
     logger.info("="*80)
 
-    auth_code_url = input("Paste the authorization code here: ").strip()
+    auth_code_url = input("Paste the full redirected URL here: ").strip()
 
     if not auth_code_url:
-        logger.error("No authorization code provided. Authentication cancelled.")
+        logger.error("No authorization URL provided. Authentication cancelled.")
+        return None, None
+
+    # Extract the authorization code from the URL
+    from urllib.parse import urlparse, parse_qs
+    try:
+        query_params = parse_qs(urlparse(auth_code_url).query)
+        auth_code = query_params.get("code", [None])[0]
+    except Exception as e:
+        logger.error(f"Could not parse the provided URL: {e}")
+        return None, None
+
+    if not auth_code:
+        logger.error("Could not find 'code' in the provided URL. Please ensure you paste the full redirected URL.")
         return None, None
 
     try:
-        # MSAL can parse the code from the full redirected URL
+        logger.info("Attempting to acquire token using the authorization code...")
         result = app.acquire_token_by_authorization_code(
-            code=auth_code_url, # Pass the full URL here
+            code=auth_code, # Use the extracted code
             scopes=SCOPES,
             redirect_uri=REDIRECT_URI
         )
     except Exception as e:
-        logger.error(f"Error acquiring token by authorization code: {e}")
+        logger.error(f"An unexpected error occurred during token acquisition: {e}")
         return None, None
 
     if "access_token" in result:
         access_token = result["access_token"]
         refresh_token = result.get("refresh_token")
-        expires_in = result.get("expires_in", 3600) # Default to 1 hour if not provided
+        expires_in = result.get("expires_in", 3600)
 
         redis_manager = get_redis_storage()
-        redis_manager.set_access_token(access_token, expires_in)
-        if refresh_token:
-            redis_manager.set_refresh_token(refresh_token)
+        redis_manager.save_tokens(
+            access_token=access_token,
+            expires_in=expires_in,
+            refresh_token=refresh_token
+        )
         
-        logger.info("Access and Refresh tokens saved to Redis.")
+        logger.info("Successfully acquired and stored tokens in Redis.")
         return access_token, refresh_token
     else:
-        logger.error(f"Unable to retrieve tokens. Response: {result.get('error_description', result)}")
+        error = result.get("error")
+        error_description = result.get("error_description")
+        logger.error(f"Failed to acquire token. Error: {error}. Description: {error_description}")
         return None, None
